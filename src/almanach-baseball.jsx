@@ -1085,6 +1085,11 @@ const AUBE = 7;            // avant 7h, on appartient a la nuit precedente
 const PASTILLE_PX = 56;    // largeur reelle d'une pastille
 const VOIE_PX = 22;        // hauteur d'une voie d'empilement
 const NB_NUITS = 14;
+/* Limite de tolerance personnelle, en heures etendues : 25,75 = 01h45.
+   Ce n'est pas un arrondi de confort. La distribution des departs montre un
+   gros bloc a 01h40 (89 matchs par saison) puis un creux, le paquet suivant
+   n'arrivant qu'a 02h05. Le seuil tombe donc dans le trou. */
+const LIMITE_TENABLE = 25.75;
 
 const fmtParis = new Intl.DateTimeFormat("fr-FR", {
   timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
@@ -1192,21 +1197,163 @@ function indiceEnvie(m, bilans) {
     0,
     Math.min(1, (((bilans[m.idDom]?.pct ?? 0.5) + (bilans[m.idExt]?.pct ?? 0.5)) / 2 - 0.42) / 0.16)
   );
-  const heure = m.h < 24 ? 1 : m.h < 25.5 ? 0.3 : 0; // jusqu'a 01h30, ca reste jouable
-  return 0.42 * heure + 0.3 * serre + 0.2 * niveau + (m.neutre ? 0.08 : 0);
+  const heure = m.h < 24 ? 1 : m.h <= LIMITE_TENABLE ? 0.3 : 0;
+  // Bonus d'enjeu : serie chaude, course au wild card, dernier match d'une serie.
+  let enjeu = 0;
+  for (const id of [m.idExt, m.idDom]) {
+    const b = bilans[id];
+    if (b?.serieNb >= 4) enjeu = Math.max(enjeu, 0.6);
+    if (b?.wc != null && Math.abs(b.wc) <= 2) enjeu = Math.max(enjeu, 0.8);
+    if (b?.magique != null && b.magique <= 15) enjeu = Math.max(enjeu, 1);
+  }
+  // Un derby de division vaut double dans la course : battre un rival direct
+  // creuse l'ecart des deux cotes a la fois. Verifie sans biais horaire (0,93x).
+  if (m.derby) {
+    const enCourse = (b) => !!b && (b.meneur || b.magique != null || (b.wc != null && b.wc <= 6));
+    enjeu = Math.max(enjeu, enCourse(bilans[m.idExt]) && enCourse(bilans[m.idDom]) ? 0.5 : 0.2);
+  }
+  // Pas de bonus pour la finale de serie : mesure sur 966 matchs, une finale
+  // demarre a 20h heure de Paris en mediane contre 01h pour les autres, et
+  // tombe 5,9x plus souvent avant minuit. Gagner une serie ne rapporte rien
+  // au classement — le bonus ne recompensait donc que l'horaire, deja pondere
+  // a 38 %. C'etait du double comptage.
+  return 0.38 * heure + 0.26 * serre + 0.16 * niveau + 0.14 * enjeu + (m.neutre ? 0.06 : 0);
 }
 
 /* Formule la raison principale, en clair. */
 function raisonEnvie(m, bilans) {
   const r = [];
-  if (m.h < 24) r.push(`à ${m.hhmm}, sans réveil`);
-  else if (m.h < 25.5) r.push(`à ${m.hhmm}, encore tenable`);
+  // L'heure figure desormais en tete de carte, avec l'etiquette EN SOIREE :
+  // inutile de la redire ici. On ne garde le qualificatif que pour la tranche
+  // 00h-01h30, qui n'a pas d'etiquette et merite d'etre signalee comme jouable.
+  if (m.h >= 24 && m.h <= LIMITE_TENABLE) r.push("encore tenable malgré l'heure");
+
+  // Les suivantes sont classees de la plus rare a la plus banale, sinon
+  // « dernier match de la série » — un match sur trois — mange la place.
   if (m.neutre && m.stade) r.push(`à ${m.stade}`);
+
+  for (const id of [m.idExt, m.idDom]) {
+    const s = libelleSerie(bilans[id]);
+    if (s && s.remarquable) {
+      r.push(`${id === m.idDom ? m.dom : m.ext} sur ${s.texte}`);
+      break;
+    }
+  }
+
+  const e = enjeuEquipe(bilans[m.idDom]) || enjeuEquipe(bilans[m.idExt]);
+  if (e && e.includes("wild card")) r.push(e);
+
   const p = m.coteDom;
   if (p != null && Math.abs(2 * p - 1) < 0.06) r.push("donné à pile ou face");
+
+  // Ne le mentionner que pour un match nocturne : en soiree, « dernier match
+  // de la serie » ne fait que redire « a une heure regardable ».
+  if (m.h >= 24 && m.matchSerie && m.totalSerie && m.matchSerie === m.totalSerie && m.totalSerie > 2)
+    r.push("dernier match de la série");
+
   const q = ((bilans[m.idDom]?.pct ?? 0.5) + (bilans[m.idExt]?.pct ?? 0.5)) / 2;
   if (q > 0.55) r.push("deux équipes du haut de tableau");
-  return r.slice(0, 2).join(", ") || `à ${m.hhmm}`;
+
+  return r.slice(0, 2).join(", ") || "en pleine nuit, mais c'est du baseball";
+}
+
+/* ---------------------------------------------------------------- *
+ *  LES ENJEUX
+ *  Le nombre magique est le total de victoires de l'equipe en tete,
+ *  ajoute aux defaites de son poursuivant, qui suffit a garantir la
+ *  premiere place quoi qu'il arrive ensuite. Quand il tombe a zero,
+ *  la division est acquise. C'est le decompte le plus jouissif du
+ *  baseball : chaque soir il baisse de un ou de deux.
+ * ---------------------------------------------------------------- */
+const DIVISION_FR = (n = "") =>
+  n
+    .replace("American League", "AL")
+    .replace("National League", "NL")
+    .replace("East", "Est")
+    .replace("Central", "Centre")
+    .replace("West", "Ouest");
+
+const RANG_FR = (r) => (r === 1 ? "1er" : r ? `${r}e` : "");
+
+function libelleSerie(b) {
+  if (!b?.serieNb) return null;
+  const gagne = b.serieType === "wins";
+  return {
+    texte: `${b.serieNb} ${gagne ? "victoire" : "défaite"}${b.serieNb > 1 ? "s" : ""} d'affilée`,
+    court: `${gagne ? "▲" : "▼"}${b.serieNb}`,
+    chaud: b.serieNb >= 3,        // suffit pour colorer le badge
+    remarquable: b.serieNb >= 4,  // exige davantage pour meriter une phrase
+    gagne,
+  };
+}
+
+/* Une phrase courte disant pourquoi le classement rend ce match interessant. */
+function enjeuEquipe(b) {
+  if (!b) return null;
+  if (b.clinche) return "qualifiée";
+  if (b.magique != null) return `nombre magique ${b.magique}`;
+  if (b.wc != null && Math.abs(b.wc) <= 3) {
+    return b.wc <= 0 ? `${Math.abs(b.wc).toFixed(1)} d'avance au wild card`
+                     : `à ${b.wc.toFixed(1)} du wild card`;
+  }
+  if (b.retard != null && b.retard <= 4) return `à ${b.retard.toFixed(1)} de la tête`;
+  return null;
+}
+
+/* ERA : points merites accordes par tranche de neuf manches. Moyenne de
+   ligue autour de 4,10 — sous 3,20 c'est excellent, au-dessus de 5,00 c'est
+   rude. C'est le chiffre par lequel on juge un lanceur en un coup d'oeil. */
+function couleurEra(era) {
+  const v = Number(era);
+  if (!isFinite(v)) return T.dim;
+  if (v < 3.2) return T.sodium;
+  if (v > 5.0) return T.clay;
+  return T.dim;
+}
+
+function Lanceur({ id, nom, st }) {
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+      <Img
+        src={PORTRAIT(id)}
+        alt=""
+        size={30}
+        rond
+        style={{ background: "rgba(239,243,234,.09)" }}
+      />
+      <span style={{ fontFamily: FF_MONO, fontSize: 10, lineHeight: 1.3, minWidth: 0 }}>
+        <span style={{ color: T.chalk, display: "block" }}>{nom}</span>
+        {st ? (
+          <span
+            title={`ERA ${st.era} — points mérités accordés toutes les neuf manches. Bilan ${st.v}-${st.d}, ${st.k} retraits sur prises.`}
+            style={{ color: couleurEra(st.era), cursor: "help" }}
+          >
+            ERA {st.era} · {st.v}-{st.d}
+          </span>
+        ) : (
+          <span style={{ color: T.dim }}>{"lanceur annoncé"}</span>
+        )}
+      </span>
+    </span>
+  );
+}
+
+/* Petite etiquette narrative. */
+function Etiquette({ children, titre, fort = false }) {
+  return (
+    <span
+      title={titre}
+      style={{
+        fontFamily: FF_MONO, fontSize: 8.5, letterSpacing: ".1em",
+        padding: "2px 6px", borderRadius: 2, cursor: titre ? "help" : "default",
+        color: fort ? T.sodium : T.dim,
+        border: `1px solid ${fort ? "rgba(242,206,107,.55)" : "rgba(239,243,234,.22)"}`,
+        background: fort ? "rgba(242,206,107,.1)" : "transparent",
+      }}
+    >
+      {children}
+    </span>
+  );
 }
 
 const GRADUATIONS = [18, 21, 24, 27, 30];
@@ -1356,8 +1503,19 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
               stade: g.venue?.name || "",
               idStade: g.venue?.id,
               typeMatch: g.gameType,
+              matchSerie: g.seriesGameNumber,
+              totalSerie: g.gamesInSeries,
+              // Annonces environ trois jours a l'avance seulement : 91 % le
+              // jour meme, 53 % a J+2, quasi rien au-dela.
+              lanceurExt: g.teams.away.probablePitcher?.fullName || null,
+              lanceurDom: g.teams.home.probablePitcher?.fullName || null,
+              idLanceurExt: g.teams.away.probablePitcher?.id || null,
+              idLanceurDom: g.teams.home.probablePitcher?.id || null,
               infobulle:
                 `${g.teams.away.team.name} @ ${g.teams.home.team.name} — ${hhmm} (Paris)` +
+                (g.seriesGameNumber && g.gamesInSeries
+                  ? `\nMatch ${g.seriesGameNumber} sur ${g.gamesInSeries} de la série`
+                  : "") +
                 (g.venue?.name ? `\n${g.venue.name}` : "") +
                 (g.teams.away.probablePitcher || g.teams.home.probablePitcher
                   ? `\nLanceurs annoncés : ${g.teams.away.probablePitcher?.fullName || "?"}` +
@@ -1382,6 +1540,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
                // au rendu, ci-dessous.
 
   const parId = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
+  const divisionDe = useMemo(
+    () => Object.fromEntries(teams.filter((t) => t.division?.id).map((t) => [t.id, t.division.id])),
+    [teams]
+  );
   const toutes = suivies.length === 0; // aucune selection = tout afficher
   const estSuivi = (m) => toutes || suivies.includes(m.idExt) || suivies.includes(m.idDom);
 
@@ -1401,12 +1563,26 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
         const habituel = stadeHabituel[m.idDom];
         m.neutre = !["S", "E"].includes(m.typeMatch) && !!habituel && m.idStade !== habituel;
         m.coteDom = coteDomicile(bilans[m.idDom]?.pct, bilans[m.idExt]?.pct);
+        // Derby de division : 32 % des matchs. Contrairement a la finale de
+        // serie, aucun biais horaire (0,93x) — c'est donc un vrai enjeu.
+        const dA = divisionDe[m.idExt];
+        m.derby = !!dA && dA === divisionDe[m.idDom];
+        m.finale = !!(m.matchSerie && m.totalSerie && m.matchSerie === m.totalSerie && m.totalSerie > 2);
       }
       for (const m of liste) m.pct = Math.max(0, Math.min(1 - largeur, m.brut));
       repartirEnVoies(liste, largeur);
     }
     return carte;
-  }, [matchs, nuits, suivies, toutes, largeur, stadeHabituel, bilans]);
+  }, [matchs, nuits, suivies, toutes, largeur, stadeHabituel, bilans, divisionDe]);
+
+  // Situation au classement des equipes suivies. Au-dela de cinq, la liste
+  // devient un tableau de classement — ce n'est pas le role de cette vue.
+  const situation = useMemo(() => {
+    if (toutes || suivies.length > 5) return [];
+    return suivies
+      .map((id) => ({ eq: parId[id], b: bilans[id] }))
+      .filter((x) => x.eq && x.b);
+  }, [suivies, bilans, parId, toutes]);
 
   // Les trois matchs a venir les plus tentants de la fenetre affichee.
   const aVoir = useMemo(
@@ -1422,10 +1598,45 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
           (x, i, tout) =>
             tout.findIndex((y) => y.m.idExt === x.m.idExt && y.m.idDom === x.m.idDom) === i
         )
-        .slice(0, 3)
-        .map((x) => x.m),
+        .slice(0, 5)
+        .map((x) => x.m)
+        // Selection sur l'interet, affichage dans l'ordre chronologique :
+        // le panneau se lit comme un agenda, pas comme un classement.
+        .sort((a, b) => (a.nuit === b.nuit ? a.h - b.h : a.nuit < b.nuit ? -1 : 1)),
     [parNuit, bilans]
   );
+
+  /* Statistiques des seuls lanceurs affiches sur les trois cartes : au plus
+     six joueurs, une requete d'environ 15 Ko. L'hydratation via /schedule ne
+     renvoie rien, il faut passer par /people. */
+  const [lanceurs, setLanceurs] = useState({});
+  const idsLanceurs = useMemo(
+    () =>
+      [...new Set(aVoir.flatMap((m) => [m.idLanceurExt, m.idLanceurDom]).filter(Boolean))]
+        .sort()
+        .join(","),
+    [aVoir]
+  );
+  useEffect(() => {
+    if (!idsLanceurs) return;
+    let annule = false;
+    const saison = new Date().getFullYear();
+    fetch(`${API}/people?personIds=${idsLanceurs}&hydrate=stats(group=pitching,type=season,season=${saison})`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (annule) return;
+        const m = {};
+        for (const p of d.people || []) {
+          const s = p.stats?.[0]?.splits?.[0]?.stat;
+          if (s) m[p.id] = { era: s.era, v: s.wins, d: s.losses, k: s.strikeOuts, main: p.pitchHand?.code };
+        }
+        setLanceurs((x) => ({ ...x, ...m }));
+      })
+      .catch(() => {});
+    return () => {
+      annule = true;
+    };
+  }, [idsLanceurs]);
 
   const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
@@ -1631,6 +1842,85 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
 
       {phase === "ok" && (
         <>
+          {/* --- la situation au classement --- */}
+          {situation.length > 0 && (
+            <div style={{ marginBottom: 22 }}>
+              <div
+                style={{
+                  fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
+                  color: T.sodium, marginBottom: 8,
+                }}
+              >
+                LA SITUATION
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {situation.map(({ eq, b }) => {
+                  const s = libelleSerie(b);
+                  return (
+                    <div
+                      key={eq.id}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap",
+                        background: "rgba(11,36,26,.5)", borderRadius: 3, padding: "7px 11px",
+                        fontFamily: FF_MONO, fontSize: 11,
+                      }}
+                    >
+                      <Img src={CAP(eq.id)} alt="" size={22} />
+                      <span style={{ color: T.chalk }}>{eq.abbreviation}</span>
+                      <span style={{ color: T.chalk, fontWeight: 700 }}>
+                        {b.v}-{b.d}
+                      </span>
+                      <span style={{ color: T.dim }}>
+                        {RANG_FR(b.rang)} {DIVISION_FR(eq.division?.name || "")}
+                        {b.retard ? ` · à ${b.retard.toFixed(1)}` : ""}
+                        {b.wc != null && !b.meneur
+                          ? ` · wild card ${b.wc <= 0 ? `+${Math.abs(b.wc).toFixed(1)}` : b.wc.toFixed(1)}`
+                          : ""}
+                      </span>
+                      {s && (
+                        <span
+                          title={`Sur ${s.texte}`}
+                          style={{
+                            color: s.chaud ? (s.gagne ? T.sodium : T.clay) : T.dim,
+                            fontWeight: s.chaud ? 700 : 400,
+                          }}
+                        >
+                          {s.court}
+                        </span>
+                      )}
+                      {b.clinche && (
+                        <span style={{ marginLeft: "auto", color: T.sodium, fontWeight: 700 }}>
+                          QUALIFIÉE
+                        </span>
+                      )}
+                      {!b.clinche && b.magique != null && (
+                        <span
+                          title="Nombre magique : victoires de cette équipe plus défaites de son poursuivant qui suffisent à lui garantir la division. À zéro, c'est plié."
+                          style={{
+                            marginLeft: "auto", background: "rgba(242,206,107,.16)",
+                            border: `1px solid ${T.sodium}`, color: T.sodium,
+                            borderRadius: 2, padding: "2px 7px", fontWeight: 700,
+                            cursor: "help",
+                          }}
+                        >
+                          magique {b.magique}
+                        </span>
+                      )}
+                      {!b.clinche && b.magique == null && b.elimination != null && (
+                        <span
+                          title="Nombre d'éliminations : défaites de cette équipe plus victoires du meneur qui la sortiraient définitivement de la course à la division."
+                          style={{ marginLeft: "auto", color: T.dim, cursor: "help" }}
+                        >
+                          élimination {b.elimination}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* --- a ne pas rater --- */}
           {aVoir.length > 0 && (
             <div style={{ marginBottom: 22 }}>
@@ -1661,11 +1951,38 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
                       <div style={{ minWidth: 0, flex: 1 }}>
                         <div style={{ fontFamily: FF_MONO, fontSize: 11.5, color: T.chalk }}>
                           {m.ext} <span style={{ opacity: .5 }}>@</span> {m.dom}
-                          <span style={{ color: T.dim }}> · {l.soir}</span>
+                          <span style={{ color: T.dim }}> · {l.soir} · </span>
+                          <span style={{ color: m.h < 24 ? T.sodium : T.chalk, fontWeight: 700 }}>
+                            {m.hhmm.replace(":", "h")}
+                          </span>
+                          <span style={{ color: T.dim, fontSize: 9.5 }}> Paris</span>
                         </div>
                         <div style={{ fontSize: 13, color: T.sodium, fontStyle: "italic" }}>
                           {raisonEnvie(m, bilans)}
                         </div>
+
+                        {/* etiquettes narratives : hors du calcul des raisons,
+                            elles ne volent donc la place d'aucune information */}
+                        {(m.derby || m.finale || m.neutre) && (
+                          <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+                            {m.derby && <Etiquette titre="Les deux équipes sont de la même division : une victoire creuse l'écart des deux côtés à la fois.">DERBY</Etiquette>}
+                            {m.finale && <Etiquette titre={`Match ${m.matchSerie} sur ${m.totalSerie} : dernier de la série.`}>FINALE</Etiquette>}
+                            {m.neutre && <Etiquette fort titre={m.stade}>TERRAIN NEUTRE</Etiquette>}
+                          </div>
+                        )}
+
+                        {m.idLanceurExt && m.idLanceurDom && (
+                          <div
+                            style={{
+                              display: "flex", alignItems: "center", gap: 9,
+                              flexWrap: "wrap", marginTop: 8,
+                            }}
+                          >
+                            <Lanceur id={m.idLanceurExt} nom={m.lanceurExt} st={lanceurs[m.idLanceurExt]} />
+                            <span style={{ color: T.clay, fontSize: 12 }}>×</span>
+                            <Lanceur id={m.idLanceurDom} nom={m.lanceurDom} st={lanceurs[m.idLanceurDom]} />
+                          </div>
+                        )}
                       </div>
                       {m.h < 24 && (
                         <span
@@ -1800,6 +2117,18 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
             « Jauger le suspense » note les matchs terminés de 1 à 10 selon l'ampleur des
             renversements. <strong>La note ne révèle pas le vainqueur</strong> : elle dit seulement
             si le replay vaut les deux heures.
+            <br />
+            <strong>ERA</strong> : points mérités accordés toutes les neuf manches — la note d'un
+            lanceur. Moyenne de ligue autour de 4,10 ; en jaune sous 3,20, en rouge au-dessus de 5,00.
+            <br />
+            Astuce d'horaires : les <strong>finales de série</strong> sont très souvent des matchs de
+            jour aux États-Unis, l'équipe voyageant ensuite. Elles démarrent à 20h heure de Paris en
+            médiane, contre 1h du matin pour les autres — c'est là qu'il faut chercher du baseball
+            regardable en direct.
+            <br />
+            Le <strong>nombre magique</strong> compte les victoires restantes à décrocher pour que la
+            division soit mathématiquement acquise. Il baisse d'un cran à chaque victoire, et d'un
+            cran aussi quand le poursuivant perd. À zéro, c'est fait.
           </p>
         </>
       )}
@@ -1831,7 +2160,9 @@ export default function App() {
     const saison = new Date().getFullYear();
     fetch(
       `${API}/standings?leagueId=103,104&season=${saison}&standingsTypes=regularSeason` +
-        `&fields=records,teamRecords,team,id,wins,losses`
+        `&fields=records,teamRecords,team,id,wins,losses,gamesBack,wildCardGamesBack,` +
+        `divisionRank,divisionLeader,magicNumber,eliminationNumber,clinched,` +
+        `streak,streakCode,streakNumber,streakType`
     )
       .then((r) => r.json())
       .then((d) => {
@@ -1839,7 +2170,23 @@ export default function App() {
         for (const rec of d.records || []) {
           for (const tr of rec.teamRecords || []) {
             const n = (tr.wins || 0) + (tr.losses || 0);
-            if (n > 0) m[tr.team.id] = { v: tr.wins, d: tr.losses, pct: tr.wins / n };
+            if (n <= 0) continue;
+            // L'API renvoie "-" plutot que null quand la valeur ne s'applique pas.
+            const nb = (x) => (x == null || x === "-" ? null : Number(x));
+            m[tr.team.id] = {
+              v: tr.wins,
+              d: tr.losses,
+              pct: tr.wins / n,
+              rang: tr.divisionRank ? Number(tr.divisionRank) : null,
+              meneur: !!tr.divisionLeader,
+              retard: nb(tr.gamesBack),
+              wc: nb(tr.wildCardGamesBack),
+              magique: nb(tr.magicNumber),
+              elimination: nb(tr.eliminationNumber),
+              clinche: !!tr.clinched,
+              serieType: tr.streak?.streakType,
+              serieNb: tr.streak?.streakNumber || 0,
+            };
           }
         }
         setBilans(m);
@@ -1848,7 +2195,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    fetch(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation,venue`)
+    fetch(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation,venue,division`)
       .then((r) => r.json())
       .then((d) => setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name))))
       .catch(() => {});
