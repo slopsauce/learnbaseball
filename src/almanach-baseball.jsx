@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 
 /* ------------------------------------------------------------------ *
  *  ALMANACH DU CARNET DE MARQUE
- *  Une notion par nuit, tirée du vrai play-by-play (statsapi.mlb.com)
+ *  Une notion par nuit, tirée du vrai play-by-play (statsapi.mlb.com),
+ *  illustrée par le clip officiel de l'action quand il existe.
  * ------------------------------------------------------------------ */
 
 const T = {
@@ -354,6 +355,27 @@ const CONCEPTS = [
 const BY_ID = Object.fromEntries(CONCEPTS.map((c) => [c.id, c]));
 
 /* ------------------------------------------------------------------ *
+ *  VIDEO
+ *  /game/{pk}/content expose les clips officiels. Le champ `guid` d'un
+ *  clip EST le playId de l'action — c'est la jointure avec le
+ *  play-by-play, qui porte deja les playId sur chaque lancer.
+ *  Seule une action sur cinq environ est filmee.
+ * ------------------------------------------------------------------ */
+function indexerClips(content) {
+  const map = new Map();
+  for (const it of content?.highlights?.highlights?.items || []) {
+    if (!it.guid) continue;
+    const pb = it.playbacks || [];
+    const mp4 = pb.find((p) => p.name === "mp4Avc") || pb.find((p) => p.url?.endsWith(".mp4"));
+    if (!mp4) continue;
+    const cuts = it.image?.cuts || [];
+    const poster = (cuts.find((c) => c.width === 1280) || cuts[0])?.src;
+    map.set(it.guid, { url: mp4.url, poster, titre: it.title, duree: it.duration });
+  }
+  return map;
+}
+
+/* ------------------------------------------------------------------ *
  *  DETECTION dans le play-by-play
  * ------------------------------------------------------------------ */
 function classifyFieldOut(desc = "") {
@@ -408,10 +430,14 @@ const ACTION_MAP = {
   defensive_indiff: "defensive_indiff",
 };
 
-function detectSightings(plays) {
+function detectSightings(plays, clips = new Map()) {
   const found = new Map();
-  const add = (id, play, over) => {
-    if (!id || !BY_ID[id] || found.has(id)) return;
+
+  const add = (id, play, clip, over) => {
+    if (!id || !BY_ID[id]) return;
+    const ancien = found.get(id);
+    // On ne remplace une occurrence deja retenue que pour gagner une video.
+    if (ancien && (ancien.clip || !clip)) return;
     found.set(id, {
       conceptId: id,
       manche: play?.about?.inning,
@@ -419,6 +445,7 @@ function detectSightings(plays) {
       description: play?.result?.description || "",
       frappeur: play?.matchup?.batter?.fullName || "",
       lanceur: play?.matchup?.pitcher?.fullName || "",
+      clip,
       ...over,
     });
   };
@@ -426,18 +453,22 @@ function detectSightings(plays) {
   for (const play of plays) {
     const r = play.result || {};
     const et = r.eventType;
+    const evs = play.playEvents || [];
 
-    if (et === "home_run" && (r.rbi || 0) >= 4) add("grand_slam", play);
-    if (et === "field_out") add(classifyFieldOut(r.description), play);
-    else if (AT_BAT_MAP[et]) add(AT_BAT_MAP[et], play);
+    // un clip est rattache a l'action si l'un de ses lancers porte le playId
+    const clip = evs.map((e) => e.playId && clips.get(e.playId)).find(Boolean) || null;
 
-    for (const ev of play.playEvents || []) {
+    if (et === "home_run" && (r.rbi || 0) >= 4) add("grand_slam", play, clip);
+    if (et === "field_out") add(classifyFieldOut(r.description), play, clip);
+    else if (AT_BAT_MAP[et]) add(AT_BAT_MAP[et], play, clip);
+
+    for (const ev of evs) {
       if (ev.type === "action") {
         const id = ACTION_MAP[ev?.details?.eventType];
-        if (id) add(id, play, { description: ev?.details?.description || r.description || "" });
+        if (id) add(id, play, clip, { description: ev?.details?.description || r.description || "" });
       }
       if (ev.isPitch && ev?.count?.balls === 3 && ev?.count?.strikes === 2) {
-        add("full_count", play, {
+        add("full_count", play, clip, {
           description: `${play?.matchup?.batter?.fullName || "Le frappeur"} sur un compte plein contre ${play?.matchup?.pitcher?.fullName || "le lanceur"}.`,
         });
       }
@@ -515,30 +546,22 @@ function Losange({ concept, size = 92, animate = false, muted = false }) {
 }
 
 /* ------------------------------------------------------------------ *
- *  Stockage
+ *  Stockage — localStorage, cloisonne par ORIGINE (pas par chemin) :
+ *  tous tes projets sur <toi>.github.io partagent le meme espace.
  * ------------------------------------------------------------------ */
-// async function loadState() {
-//   try {
-//     const r = await window.storage.get(STORE_KEY);
-//     return r ? JSON.parse(r.value) : { appris: [] };
-//   } catch {
-//     return { appris: [] };
-//   }
-// }
-// async function saveState(s) {
-//   try {
-//     await window.storage.set(STORE_KEY, JSON.stringify(s));
-//   } catch {
-//     /* mode ephemere */
-//   }
-// }
-
 async function loadState() {
-  try { return JSON.parse(localStorage.getItem(STORE_KEY)) || { appris: [] }; }
-  catch { return { appris: [] }; }
+  try {
+    return JSON.parse(localStorage.getItem(STORE_KEY)) || { appris: [] };
+  } catch {
+    return { appris: [] };
+  }
 }
 async function saveState(s) {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(s)); } catch {}
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(s));
+  } catch {
+    /* mode prive / quota plein : on continue en memoire */
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -571,7 +594,6 @@ export default function Almanach() {
   const [erreur, setErreur] = useState("");
   const [justInked, setJustInked] = useState(null);
   const [ouvertCarnet, setOuvertCarnet] = useState(false);
-  const cardRef = useRef(null);
   const [resetArme, setResetArme] = useState(false);
 
   useEffect(() => {
@@ -581,9 +603,7 @@ export default function Almanach() {
   useEffect(() => {
     fetch(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation`)
       .then((r) => r.json())
-      .then((d) =>
-        setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name)))
-      )
+      .then((d) => setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name))))
       .catch(() => {});
   }, []);
 
@@ -607,9 +627,16 @@ export default function Almanach() {
         return;
       }
       const g = finis[0];
-      const pbp = await fetch(`${API}/game/${g.gamePk}/playByPlay`).then((r) => r.json());
-      const vues = detectSightings(pbp.allPlays || []);
-      vues.sort((a, b) => (BY_ID[b.conceptId].rarete - BY_ID[a.conceptId].rarete));
+
+      // Les clips sont un bonus : leur absence ne doit pas casser la fiche.
+      const [pbp, content] = await Promise.all([
+        fetch(`${API}/game/${g.gamePk}/playByPlay`).then((r) => r.json()),
+        fetch(`${API}/game/${g.gamePk}/content`).then((r) => r.json()).catch(() => null),
+      ]);
+
+      const vues = detectSightings(pbp.allPlays || [], indexerClips(content));
+      vues.sort((a, b) => BY_ID[b.conceptId].rarete - BY_ID[a.conceptId].rarete);
+
       setGame(g);
       setSightings(vues);
       setIdx(0);
@@ -640,8 +667,18 @@ export default function Almanach() {
     setJustInked(courant.conceptId);
     await saveState({ appris: s });
     setTimeout(() => setJustInked(null), 1400);
-    // la notion notée sort de `nouveaux` : la liste rétrécit et l'index
-    // pointe naturellement sur la suivante. L'incrémenter en sauterait une.
+    // La notion notee sort de `nouveaux` : la liste retrecit et l'index
+    // pointe naturellement sur la suivante. L'incrementer en sauterait une.
+  };
+
+  const vider = async () => {
+    if (!resetArme) {
+      setResetArme(true);
+      return;
+    }
+    setAppris([]);
+    await saveState({ appris: [] });
+    setResetArme(false);
   };
 
   const css = `
@@ -773,7 +810,6 @@ export default function Almanach() {
 
             {/* LA CASE */}
             <div
-              ref={cardRef}
               style={{
                 background: "rgba(11,36,26,.78)",
                 border: `1px solid rgba(239,243,234,.2)`,
@@ -807,6 +843,33 @@ export default function Almanach() {
               </div>
             </div>
 
+            {/* LE CLIP — seulement si l'action a ete filmee */}
+            {courant.clip && (
+              <div style={{ marginTop: 14 }}>
+                <video
+                  key={courant.clip.url}
+                  src={courant.clip.url}
+                  poster={courant.clip.poster}
+                  controls
+                  preload="none"
+                  playsInline
+                  style={{
+                    width: "100%", display: "block", borderRadius: 3,
+                    background: "#000", border: `1px solid rgba(239,243,234,.2)`,
+                  }}
+                />
+                <p
+                  style={{
+                    fontFamily: FF_MONO, fontSize: 10, color: T.dim,
+                    margin: "6px 0 0", letterSpacing: ".04em",
+                  }}
+                >
+                  {courant.clip.titre}
+                  {courant.clip.duree ? ` · ${courant.clip.duree}` : ""}
+                </p>
+              </div>
+            )}
+
             {/* LA NOTION */}
             <h2
               style={{
@@ -826,12 +889,7 @@ export default function Almanach() {
               </p>
             ))}
 
-            <div
-              style={{
-                borderLeft: `3px solid ${T.clay}`, paddingLeft: 14,
-                margin: "22px 0 26px",
-              }}
-            >
+            <div style={{ borderLeft: `3px solid ${T.clay}`, paddingLeft: 14, margin: "22px 0 26px" }}>
               <div style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em", color: T.dim }}>
                 À RETENIR
               </div>
@@ -923,12 +981,7 @@ export default function Almanach() {
                       opacity: vu ? 1 : .45,
                     }}
                   >
-                    <Losange
-                      concept={c}
-                      size={62}
-                      muted={!vu}
-                      animate={justInked === c.id}
-                    />
+                    <Losange concept={c} size={62} muted={!vu} animate={justInked === c.id} />
                     <div
                       style={{
                         fontFamily: FF_MONO, fontSize: 10, color: vu ? T.clay : T.dim,
@@ -958,25 +1011,24 @@ export default function Almanach() {
             fontFamily: FF_MONO, fontSize: 10, color: "rgba(147,166,151,.7)", lineHeight: 1.7,
           }}
         >
-          <button
-            onClick={async () => {
-              if (!resetArme) { setResetArme(true); return; }
-              setAppris([]);
-              await saveState({ appris: [] });
-              setResetArme(false);
-            }}
-            onBlur={() => setResetArme(false)}
-            style={{
-              all: "unset", cursor: "pointer", display: "inline-block",
-              marginBottom: 12, color: resetArme ? T.sodium : T.clay,
-              borderBottom: `1px solid currentColor`,
-            }}
-          >
-            {resetArme
-              ? `Confirmer — effacer ${appris.length} notions`
-              : "Vider le carnet"}
-          </button>
-          <br />
+          {appris.length > 0 && (
+            <>
+              <button
+                className="alm-btn"
+                onClick={vider}
+                onBlur={() => setResetArme(false)}
+                style={{
+                  all: "unset", cursor: "pointer", display: "inline-block",
+                  fontFamily: FF_MONO, fontSize: 10, marginBottom: 12,
+                  color: resetArme ? T.sodium : T.clay,
+                  borderBottom: "1px solid currentColor",
+                }}
+              >
+                {resetArme ? `Confirmer — effacer ${appris.length} notions` : "Vider le carnet"}
+              </button>
+              <br />
+            </>
+          )}
           Données : statsapi.mlb.com — usage personnel et éducatif.
           <br />
           Les notions sont piochées dans le vrai déroulé du match ; les plus rares passent en premier,
