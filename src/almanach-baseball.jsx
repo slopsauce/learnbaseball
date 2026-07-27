@@ -1578,7 +1578,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
   // Situation au classement des equipes suivies. Au-dela de cinq, la liste
   // devient un tableau de classement — ce n'est pas le role de cette vue.
   const situation = useMemo(() => {
-    if (toutes || suivies.length > 5) return [];
+    if (toutes || suivies.length > 6) return [];
     return suivies
       .map((id) => ({ eq: parId[id], b: bilans[id] }))
       .filter((x) => x.eq && x.b);
