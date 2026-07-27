@@ -1221,7 +1221,7 @@ function indiceEnvie(m, bilans) {
 }
 
 /* Formule la raison principale, en clair. */
-function raisonEnvie(m, bilans) {
+function raisonEnvie(m, bilans, stades = {}, stadeHabituel = {}) {
   const r = [];
   // L'heure figure desormais en tete de carte, avec l'etiquette EN SOIREE :
   // inutile de la redire ici. On ne garde le qualificatif que pour la tranche
@@ -1254,7 +1254,15 @@ function raisonEnvie(m, bilans) {
   const q = ((bilans[m.idDom]?.pct ?? 0.5) + (bilans[m.idExt]?.pct ?? 0.5)) / 2;
   if (q > 0.55) r.push("deux équipes du haut de tableau");
 
-  return r.slice(0, 2).join(", ") || "en pleine nuit, mais c'est du baseball";
+  if (r.length) return r.slice(0, 2).join(", ");
+  // Aucun motif serieux : place a l'anecdote, qui ne vole donc rien.
+  const a = anecdote(m, stades, stadeHabituel);
+  if (a) return a;
+  // Aucun motif distinctif : la carte est la pour l'horaire, et le repli doit
+  // le dire sans contredire l'en-tete. Un repli unique se contredisait pour
+  // les matchs de soiree, qui n'ont plus de qualificatif horaire dans `r`.
+  if (m.h < 24) return "à une heure regardable, tout simplement";
+  return "en pleine nuit, mais c'est du baseball";
 }
 
 /* ---------------------------------------------------------------- *
@@ -1356,6 +1364,81 @@ function Etiquette({ children, titre, fort = false }) {
   );
 }
 
+/* ---------------------------------------------------------------- *
+ *  ANECDOTES
+ *  Servies uniquement quand la carte n'a AUCUN motif serieux : elles
+ *  ne prennent donc jamais la place d'une information. Toutes sont
+ *  vraies — l'API donne l'altitude, les dimensions des clotures, la
+ *  capacite et les coordonnees de chaque parc. Les jeux de noms sont
+ *  la seule part de fantaisie, et ils portent sur des faits (les
+ *  Orioles et les Blue Jays sont bien deux oiseaux).
+ * ---------------------------------------------------------------- */
+const PIED = 0.3048;
+const m2 = (pieds) => Math.round(pieds * PIED);
+
+/* Affiches cocasses. Le texte vit avec les identifiants : les separer
+   en deux tables m'avait deja fait oublier d'en declarer la moitie. */
+const AFFICHES = [
+  { ids: [110, 141, 138], texte: "duel d'oiseaux, personne ne sait voler" },
+  { ids: [116, 112], texte: "confrontation féline" },
+  { ids: [134, 136], texte: "des pirates contre des marins, enfin" },
+  { ids: [111, 145], texte: "des chaussettes rouges contre des blanches" },
+  { ids: [117, 108], texte: "duel céleste" },
+  { ids: [139, 146], texte: "deux poissons dans le même bocal" },
+  { ids: [113, 111], texte: "duel de rouges" },
+  // Les deux grandes rivalites du baseball, parfaitement reelles.
+  { ids: [119, 137], texte: "la plus vieille rivalité du baseball, importée de New York en 1958" },
+  { ids: [147, 111], texte: "Yankees contre Red Sox, un siècle de rancune" },
+];
+
+function blagueDeNoms(a, b) {
+  const t = AFFICHES.find((x) => x.ids.includes(a) && x.ids.includes(b));
+  return t ? t.texte : null;
+}
+
+function distanceKm(a, b) {
+  if (!a?.lat || !b?.lat) return null;
+  const R = 6371, r = (x) => (x * Math.PI) / 180;
+  const dLat = r(b.lat - a.lat), dLon = r(b.lon - a.lon);
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLon / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(h)));
+}
+
+/* Renvoie une anecdote vraie sur ce match, ou null. */
+function anecdote(m, stades, stadeHabituel) {
+  const s = stades[m.idStade];
+  const cand = [];
+
+  // Ordre volontaire : du plus remarquable au plus anodin. On ne tire ensuite
+  // que parmi les deux premieres, pour ne pas servir « 50 144 places »
+  // quand on avait l'altitude de Coors Field sous la main.
+  if (s?.alt >= 3000)
+    cand.push(`à ${m2(s.alt)} m d'altitude — l'air est fin, la balle porte plus loin`);
+
+  const b = blagueDeNoms(m.idExt, m.idDom);
+  if (b) cand.push(b);
+
+  if (s) {
+    const petit = Math.min(s.gauche || 999, s.droite || 999);
+    if (petit <= 315) cand.push(`clôture à ${m2(petit)} m seulement d'un côté, ça sort vite`);
+
+    const km = distanceKm(stades[stadeHabituel[m.idExt]], s);
+    if (km && km >= 3000) cand.push(`${km.toLocaleString("fr-FR")} km de voyage pour les visiteurs`);
+
+    if (s.centre >= 415) cand.push(`champ centre à ${m2(s.centre)} m, il faudra courir`);
+    if (s.places >= 50000)
+      cand.push(`${s.places.toLocaleString("fr-FR")} places, un des plus grands parcs`);
+    if (s.toit && s.toit !== "Open") cand.push("sous un toit, la météo n'aura pas son mot à dire");
+  }
+
+  if (!cand.length) return null;
+  // Choix stable — un meme match donne toujours la meme anecdote — mais
+  // restreint aux deux meilleures pour garder de la variete sans perdre en interet.
+  return cand[m.id % Math.min(cand.length, 2)];
+}
+
 const GRADUATIONS = [18, 21, 24, 27, 30];
 const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
 
@@ -1437,7 +1520,7 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
   );
 }
 
-function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} }) {
+function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {} }) {
   const [ancre, setAncre] = useState(() => decalerJour(new Date().toISOString().slice(0, 10), -1));
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
@@ -1958,7 +2041,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} 
                           <span style={{ color: T.dim, fontSize: 9.5 }}> Paris</span>
                         </div>
                         <div style={{ fontSize: 13, color: T.sodium, fontStyle: "italic" }}>
-                          {raisonEnvie(m, bilans)}
+                          {raisonEnvie(m, bilans, stades, stadeHabituel)}
                         </div>
 
                         {/* etiquettes narratives : hors du calcul des raisons,
@@ -2207,6 +2290,32 @@ export default function App() {
     [teams]
   );
 
+  /* Stades : altitude, dimensions des clotures, capacite, toit, coordonnees.
+     Une requete de 33 Ko pour les 59 parcs, qui alimente les anecdotes. */
+  const [stades, setStades] = useState({});
+  useEffect(() => {
+    fetch(`${API}/venues?sportId=1&hydrate=location,fieldInfo`)
+      .then((r) => r.json())
+      .then((d) => {
+        const m = {};
+        for (const v of d.venues || []) {
+          const f = v.fieldInfo || {};
+          const l = v.location || {};
+          m[v.id] = {
+            nom: v.name,
+            ville: l.city,
+            alt: l.elevation,               // en pieds
+            lat: l.defaultCoordinates?.latitude,
+            lon: l.defaultCoordinates?.longitude,
+            gauche: f.leftLine, centre: f.center, droite: f.rightLine,
+            places: f.capacity, toit: f.roofType,
+          };
+        }
+        setStades(m);
+      })
+      .catch(() => {});
+  }, []);
+
   const majSuivies = (v) => {
     setSuivies(v);
     saveState({ suivies: v });
@@ -2316,6 +2425,7 @@ export default function App() {
             setSuivies={majSuivies}
             stadeHabituel={stadeHabituel}
             bilans={bilans}
+            stades={stades}
           />
         )}
 
