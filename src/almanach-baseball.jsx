@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
 /* ------------------------------------------------------------------ *
  *  ALMANACH DU CARNET DE MARQUE
@@ -76,7 +76,7 @@ const CONCEPTS = [
     gist: "Trois prises et le frappeur repart s'asseoir.",
     corps: [
       "Une prise (strike) se compte de trois façons : lancer dans la zone que le frappeur laisse passer, élan dans le vide, ou fausse balle. Nuance essentielle : une fausse balle ne peut jamais donner la troisième prise. Un frappeur peut en enchaîner quinze, l'échange continue.",
-      "Le carnet distingue les deux façons de se faire retirer : « K » quand le frappeur s'est élancé, « Ʞ » à l'envers quand il a regardé passer. Cette convention date des années 1860 et n'a jamais bougé.",
+      "Le carnet distingue les deux façons de se faire retirer : « K » quand le frappeur s'est élancé, « {{K}} » — le même, retourné — quand il a regardé passer. Cette convention date des années 1860 et n'a jamais bougé.",
     ],
     retenir: "Trois prises, mais une fausse balle ne peut pas être la troisième.",
   },
@@ -580,6 +580,20 @@ function dateFR(s) {
   }
 }
 
+/* Le « K » inverse du carnet n'a pas de codepoint fiable : U+A7B0 manque
+   dans la quasi-totalite des polices, systeme compris, et sort en tofu.
+   On retourne un vrai K en CSS — meme police, meme graisse, toujours rendu. */
+function texteAvecKInverse(txt) {
+  return String(txt).split("{{K}}").map((seg, i) => (
+    <React.Fragment key={i}>
+      {i > 0 && (
+        <span style={{ display: "inline-block", transform: "scaleX(-1)" }}>K</span>
+      )}
+      {seg}
+    </React.Fragment>
+  ));
+}
+
 /* ------------------------------------------------------------------ *
  *  APP
  * ------------------------------------------------------------------ */
@@ -595,6 +609,8 @@ export default function Almanach() {
   const [justInked, setJustInked] = useState(null);
   const [ouvertCarnet, setOuvertCarnet] = useState(false);
   const [resetArme, setResetArme] = useState(false);
+  const [consulte, setConsulte] = useState(null); // conceptId ouvert depuis le carnet
+  const articleRef = useRef(null);
 
   useEffect(() => {
     loadState().then((s) => setAppris(s.appris || []));
@@ -656,9 +672,24 @@ export default function Almanach() {
     [sightings, appris]
   );
   const liste = nouveaux.length ? nouveaux : sightings;
-  const courant = liste[Math.min(idx, Math.max(liste.length - 1, 0))] || null;
+
+  // Consultation depuis le carnet : on reutilise l'action du match si la notion
+  // y figure, sinon on affiche la fiche seule (mode revision, sans ancrage).
+  const consulteSighting = consulte ? sightings.find((s) => s.conceptId === consulte) : null;
+  const courant = consulte
+    ? consulteSighting || { conceptId: consulte, clip: null, virtuel: true }
+    : liste[Math.min(idx, Math.max(liste.length - 1, 0))] || null;
+
   const concept = courant ? BY_ID[courant.conceptId] : null;
   const dejaVu = courant ? appris.includes(courant.conceptId) : false;
+  const ancre = !!courant && !courant.virtuel; // rattachee a une vraie action
+
+  // Ramene la fiche sous les yeux quand on clique une case du carnet.
+  useEffect(() => {
+    if (!consulte || !articleRef.current) return;
+    const doux = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    articleRef.current.scrollIntoView({ behavior: doux ? "smooth" : "auto", block: "start" });
+  }, [consulte]);
 
   const noter = async () => {
     if (!courant || dejaVu) return;
@@ -795,20 +826,29 @@ export default function Almanach() {
         )}
 
         {phase === "ok" && courant && concept && (
-          <article key={courant.conceptId} className="alm-rise">
-            {/* en-tete match */}
+          <article ref={articleRef} key={courant.conceptId} className="alm-rise">
+            {/* en-tete : le match, ou la mention de consultation */}
             <div
               style={{
                 fontFamily: FF_MONO, fontSize: 11, color: T.dim,
                 letterSpacing: ".06em", marginBottom: 14,
               }}
             >
-              {game.teams.away.team.name} {game.teams.away.score} — {game.teams.home.score}{" "}
-              {game.teams.home.team.name}
-              <span style={{ color: "rgba(147,166,151,.55)" }}> · {dateFR(game.gameDate)}</span>
+              {ancre ? (
+                <>
+                  {game.teams.away.team.name} {game.teams.away.score} — {game.teams.home.score}{" "}
+                  {game.teams.home.team.name}
+                  <span style={{ color: "rgba(147,166,151,.55)" }}> · {dateFR(game.gameDate)}</span>
+                </>
+              ) : (
+                <span style={{ color: T.sodium }}>
+                  CONSULTÉE DEPUIS LE CARNET · absente de ce match
+                </span>
+              )}
             </div>
 
-            {/* LA CASE */}
+            {/* LA CASE — seulement si la notion est ancree dans une action */}
+            {ancre && (
             <div
               style={{
                 background: "rgba(11,36,26,.78)",
@@ -842,6 +882,22 @@ export default function Almanach() {
                 )}
               </div>
             </div>
+            )}
+
+            {/* Mode revision : pas d'action a montrer, mais on garde l'identite visuelle */}
+            {!ancre && (
+              <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+                <Losange concept={concept} size={78} animate />
+                <div
+                  style={{
+                    fontFamily: FF_MONO, fontWeight: 700, fontSize: 28,
+                    color: T.clay, letterSpacing: ".04em",
+                  }}
+                >
+                  {concept.code}
+                </div>
+              </div>
+            )}
 
             {/* LE CLIP — seulement si l'action a ete filmee */}
             {courant.clip && (
@@ -885,7 +941,7 @@ export default function Almanach() {
 
             {concept.corps.map((p, i) => (
               <p key={i} style={{ fontSize: 16, lineHeight: 1.68, margin: "0 0 15px", color: "rgba(239,243,234,.93)" }}>
-                {p}
+                {texteAvecKInverse(p)}
               </p>
             ))}
 
@@ -898,29 +954,39 @@ export default function Almanach() {
 
             {/* actions */}
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              {!dejaVu ? (
+              {/* On ne peut cocher une notion que si elle s'est vraiment produite. */}
+              {ancre && !dejaVu && (
                 <button className="alm-btn" onClick={noter} style={btnStyle(true)}>
                   Noter dans le carnet
                 </button>
-              ) : (
+              )}
+              {dejaVu && (
                 <span style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, letterSpacing: ".1em" }}>
                   ✓ DÉJÀ NOTÉE
                 </span>
               )}
-              {liste.length > 1 && (
-                <button
-                  className="alm-btn"
-                  onClick={() => setIdx((idx + 1) % liste.length)}
-                  style={btnStyle(false)}
-                >
-                  Une autre de cette nuit
+              {consulte ? (
+                <button className="alm-btn" onClick={() => setConsulte(null)} style={btnStyle(!dejaVu)}>
+                  Retour à cette nuit
                 </button>
+              ) : (
+                liste.length > 1 && (
+                  <button
+                    className="alm-btn"
+                    onClick={() => setIdx((idx + 1) % liste.length)}
+                    style={btnStyle(false)}
+                  >
+                    Une autre de cette nuit
+                  </button>
+                )
               )}
-              <span style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, marginLeft: "auto" }}>
-                {nouveaux.length
-                  ? `${nouveaux.length} notion${nouveaux.length > 1 ? "s" : ""} neuve${nouveaux.length > 1 ? "s" : ""} dans ce match`
-                  : "tout ce match est déjà noté"}
-              </span>
+              {!consulte && (
+                <span style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, marginLeft: "auto" }}>
+                  {nouveaux.length
+                    ? `${nouveaux.length} notion${nouveaux.length > 1 ? "s" : ""} neuve${nouveaux.length > 1 ? "s" : ""} dans ce match`
+                    : "tout ce match est déjà noté"}
+                </span>
+              )}
             </div>
           </article>
         )}
@@ -969,16 +1035,20 @@ export default function Almanach() {
               {CONCEPTS.map((c) => {
                 const vu = appris.includes(c.id);
                 return (
-                  <div
+                  <button
                     key={c.id}
                     className="alm-cell"
-                    tabIndex={0}
+                    onClick={() => setConsulte(c.id)}
+                    aria-label={`Ouvrir la fiche : ${c.titre}`}
                     title={c.titre}
                     style={{
+                      all: "unset", cursor: "pointer", display: "block", boxSizing: "border-box",
                       border: `1px solid rgba(239,243,234,${vu ? ".26" : ".1"})`,
-                      background: vu ? "rgba(11,36,26,.6)" : "rgba(11,36,26,.28)",
+                      background: consulte === c.id
+                        ? "rgba(194,96,58,.22)"
+                        : vu ? "rgba(11,36,26,.6)" : "rgba(11,36,26,.28)",
                       borderRadius: 2, padding: "8px 6px 10px", textAlign: "center",
-                      opacity: vu ? 1 : .45,
+                      opacity: vu ? 1 : .55,
                     }}
                   >
                     <Losange concept={c} size={62} muted={!vu} animate={justInked === c.id} />
@@ -998,7 +1068,7 @@ export default function Almanach() {
                     >
                       {c.titre}
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
