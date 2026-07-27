@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
 /* ------------------------------------------------------------------ *
- *  ALMANACH DU CARNET DE MARQUE
- *  Une notion par nuit, tirée du vrai play-by-play (statsapi.mlb.com),
- *  illustrée par le clip officiel de l'action quand il existe.
+ *  L'ALMANACH
+ *  Deux vues sur une meme saison :
+ *   - LE CARNET : une notion par nuit, tiree du vrai play-by-play,
+ *     illustree par le clip officiel de l'action quand il existe.
+ *   - LES NUITS : le calendrier remis a l'heure de Paris. L'axe n'est
+ *     pas la date mais l'heure reelle de debut, minuit au centre.
+ *  Source : statsapi.mlb.com (sans cle, CORS ouvert).
  * ------------------------------------------------------------------ */
 
 const T = {
@@ -22,13 +26,6 @@ const FF_MONO = "'Space Mono', ui-monospace, Menlo, monospace";
 
 const STORE_KEY = "almanach-carnet-v1";
 const API = "https://statsapi.mlb.com/api/v1";
-
-/* ------------------------------------------------------------------ *
- *  LE CATALOGUE
- *  rarete : plus c'est haut, plus l'evenement est rare — donc plus il
- *  est prioritaire (un simple reviendra demain, pas un balk).
- *  legs   : segments du losange traces (1 = marbre>1er, 2 = 1er>2e ...)
- * ------------------------------------------------------------------ */
 const CONCEPTS = [
   {
     id: "ground_out", code: "6-3", legs: [], rarete: 3,
@@ -445,6 +442,10 @@ function detectSightings(plays, clips = new Map()) {
       description: play?.result?.description || "",
       frappeur: play?.matchup?.batter?.fullName || "",
       lanceur: play?.matchup?.pitcher?.fullName || "",
+      idFrappeur: play?.matchup?.batter?.id,
+      idLanceur: play?.matchup?.pitcher?.id,
+      coteFrappeur: play?.matchup?.batSide?.code,
+      coteLanceur: play?.matchup?.pitchHand?.code,
       clip,
       ...over,
     });
@@ -475,6 +476,36 @@ function detectSightings(plays, clips = new Map()) {
     }
   }
   return [...found.values()];
+}
+
+/* ------------------------------------------------------------------ *
+ *  IMAGERIE OFFICIELLE MLB
+ *  Tout est servi en CORS ouvert et minuscule : 761 o pour une casquette,
+ *  6 Ko pour un portrait detoure. Cache 14 jours cote CDN.
+ * ------------------------------------------------------------------ */
+const CAP = (id, sombre = true) =>
+  `https://www.mlbstatic.com/team-logos/team-cap-on-${sombre ? "dark" : "light"}/${id}.svg`;
+const ROND = (id) => `https://midfield.mlbstatic.com/v1/team/${id}/spots/72`;
+const PORTRAIT = (id) => `https://midfield.mlbstatic.com/v1/people/${id}/spots/120`;
+
+const COTE = { L: "gaucher", R: "droitier", S: "ambidextre" };
+
+/* Une image qui disparait proprement si le CDN ne repond pas. */
+function Img({ src, alt, size, rond = false, style }) {
+  const [ko, setKo] = useState(false);
+  if (ko || !src) return null;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      width={size}
+      height={size}
+      loading="lazy"
+      decoding="async"
+      onError={() => setKo(true)}
+      style={{ display: "block", flexShrink: 0, borderRadius: rond ? "50%" : 0, ...style }}
+    />
+  );
 }
 
 /* ------------------------------------------------------------------ *
@@ -549,16 +580,22 @@ function Losange({ concept, size = 92, animate = false, muted = false }) {
  *  Stockage — localStorage, cloisonne par ORIGINE (pas par chemin) :
  *  tous tes projets sur <toi>.github.io partagent le meme espace.
  * ------------------------------------------------------------------ */
+const ETAT_VIDE = { appris: [], suivies: [119] };
+
 async function loadState() {
   try {
-    return JSON.parse(localStorage.getItem(STORE_KEY)) || { appris: [] };
+    return { ...ETAT_VIDE, ...(JSON.parse(localStorage.getItem(STORE_KEY)) || {}) };
   } catch {
-    return { appris: [] };
+    return { ...ETAT_VIDE };
   }
 }
-async function saveState(s) {
+
+/* Semantique de fusion : sauver les notions ne doit pas effacer les equipes
+   suivies, et reciproquement. */
+async function saveState(patch) {
   try {
-    localStorage.setItem(STORE_KEY, JSON.stringify(s));
+    const courant = JSON.parse(localStorage.getItem(STORE_KEY)) || {};
+    localStorage.setItem(STORE_KEY, JSON.stringify({ ...courant, ...patch }));
   } catch {
     /* mode prive / quota plein : on continue en memoire */
   }
@@ -594,34 +631,20 @@ function texteAvecKInverse(txt) {
   ));
 }
 
-/* ------------------------------------------------------------------ *
- *  APP
- * ------------------------------------------------------------------ */
-export default function Almanach() {
-  const [teams, setTeams] = useState([]);
-  const [teamId, setTeamId] = useState(119);
+/* ================================================================== *
+ *  VUE « LE CARNET »
+ * ================================================================== */
+function VueAlmanach({ teams, appris, setAppris, suivies }) {
+  const [teamId, setTeamId] = useState(() => suivies[0] || 119);
   const [game, setGame] = useState(null);
   const [sightings, setSightings] = useState([]);
-  const [appris, setAppris] = useState([]);
   const [idx, setIdx] = useState(0);
   const [phase, setPhase] = useState("load"); // load | ok | vide | erreur
   const [erreur, setErreur] = useState("");
   const [justInked, setJustInked] = useState(null);
   const [ouvertCarnet, setOuvertCarnet] = useState(false);
-  const [resetArme, setResetArme] = useState(false);
   const [consulte, setConsulte] = useState(null); // conceptId ouvert depuis le carnet
   const articleRef = useRef(null);
-
-  useEffect(() => {
-    loadState().then((s) => setAppris(s.appris || []));
-  }, []);
-
-  useEffect(() => {
-    fetch(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation`)
-      .then((r) => r.json())
-      .then((d) => setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name))))
-      .catch(() => {});
-  }, []);
 
   const charger = useCallback(async (tid) => {
     setPhase("load");
@@ -630,7 +653,8 @@ export default function Almanach() {
       const fin = new Date();
       const debut = new Date(Date.now() - 12 * 864e5);
       const sch = await fetch(
-        `${API}/schedule?sportId=1&teamId=${tid}&startDate=${iso(debut)}&endDate=${iso(fin)}`
+        `${API}/schedule?sportId=1&teamId=${tid}&startDate=${debut.toISOString().slice(0, 10)}` +
+          `&endDate=${fin.toISOString().slice(0, 10)}`
       ).then((r) => r.json());
 
       const finis = (sch.dates || [])
@@ -682,9 +706,8 @@ export default function Almanach() {
 
   const concept = courant ? BY_ID[courant.conceptId] : null;
   const dejaVu = courant ? appris.includes(courant.conceptId) : false;
-  const ancre = !!courant && !courant.virtuel; // rattachee a une vraie action
+  const ancre = !!courant && !courant.virtuel;
 
-  // Ramene la fiche sous les yeux quand on clique une case du carnet.
   useEffect(() => {
     if (!consulte || !articleRef.current) return;
     const doux = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -692,7 +715,7 @@ export default function Almanach() {
   }, [consulte]);
 
   const noter = async () => {
-    if (!courant || dejaVu) return;
+    if (!courant || dejaVu || !ancre) return;
     const s = [...appris, courant.conceptId];
     setAppris(s);
     setJustInked(courant.conceptId);
@@ -700,6 +723,1146 @@ export default function Almanach() {
     setTimeout(() => setJustInked(null), 1400);
     // La notion notee sort de `nouveaux` : la liste retrecit et l'index
     // pointe naturellement sur la suivante. L'incrementer en sauterait une.
+  };
+
+  return (
+    <div className="alm-rise">
+      {/* ---------- quelle equipe on etudie ---------- */}
+      <div style={{ margin: "0 0 22px", display: "flex", alignItems: "center", gap: 10 }}>
+        <label
+          htmlFor="eq"
+          style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".16em", color: T.dim }}
+        >
+          D'APRÈS
+        </label>
+        <Img src={CAP(teamId)} alt="" size={26} />
+        <select
+          id="eq"
+          className="alm-sel"
+          value={teamId}
+          onChange={(e) => setTeamId(Number(e.target.value))}
+          style={{
+            fontFamily: FF_MONO, fontSize: 12, color: T.chalk,
+            background: "rgba(11,36,26,.7)", border: "1px solid rgba(239,243,234,.28)",
+            padding: "6px 10px", borderRadius: 2, cursor: "pointer",
+          }}
+        >
+          {(() => {
+            const liste = teams.length ? teams : [{ id: 119, name: "Los Angeles Dodgers" }];
+            const mes = liste.filter((t) => suivies.includes(t.id));
+            const reste = liste.filter((t) => !suivies.includes(t.id));
+            const opt = (t) => (
+              <option key={t.id} value={t.id} style={{ color: "#111" }}>
+                {t.name}
+              </option>
+            );
+            return mes.length ? (
+              <>
+                <optgroup label="Que je suis">{mes.map(opt)}</optgroup>
+                <optgroup label="Les autres">{reste.map(opt)}</optgroup>
+              </>
+            ) : (
+              liste.map(opt)
+            );
+          })()}
+        </select>
+      </div>
+
+      {phase === "load" && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
+          Dépouillement de la feuille de match…
+        </p>
+      )}
+
+      {phase === "erreur" && (
+        <div style={{ border: `1px solid ${T.clay}`, padding: 18, borderRadius: 3 }}>
+          <p style={{ margin: 0, fontSize: 15 }}>
+            La feuille de match n'est pas arrivée. L'API de MLB n'a pas répondu.
+          </p>
+          <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, margin: "8px 0 14px" }}>
+            {erreur}
+          </p>
+          <button className="alm-btn" onClick={() => charger(teamId)} style={btnStyle(true)}>
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {phase === "vide" && (
+        <p style={{ fontSize: 16 }}>
+          Aucun match terminé sur les douze derniers jours. Hors saison, ou pause du match des étoiles —
+          choisis une autre équipe en attendant.
+        </p>
+      )}
+
+      {phase === "ok" && courant && concept && (
+        <article ref={articleRef} key={courant.conceptId} className="alm-rise">
+          <div
+            style={{
+              fontFamily: FF_MONO, fontSize: 11, color: T.dim,
+              letterSpacing: ".06em", marginBottom: 14,
+            }}
+          >
+            {ancre ? (
+              <span style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <Img src={CAP(game.teams.away.team.id)} alt="" size={22} />
+                <span>{game.teams.away.team.name} {game.teams.away.score}</span>
+                <span style={{ opacity: .5 }}>—</span>
+                <span>{game.teams.home.score} {game.teams.home.team.name}</span>
+                <Img src={CAP(game.teams.home.team.id)} alt="" size={22} />
+                <span style={{ color: "rgba(147,166,151,.55)" }}>
+                  · {dateFR(game.gameDate)}{game.venue?.name ? ` · ${game.venue.name}` : ""}
+                </span>
+              </span>
+            ) : (
+              <span style={{ color: T.sodium }}>CONSULTÉE DEPUIS LE CARNET · absente de ce match</span>
+            )}
+          </div>
+
+          {/* LA CASE — seulement si la notion est ancree dans une action */}
+          {ancre && (
+            <div
+              style={{
+                background: "rgba(11,36,26,.78)",
+                border: "1px solid rgba(239,243,234,.2)",
+                borderRadius: 3, padding: 22,
+                display: "flex", gap: 22, alignItems: "center", flexWrap: "wrap",
+              }}
+            >
+              <div style={{ flexShrink: 0 }}>
+                <Losange concept={concept} size={104} animate />
+              </div>
+              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                <div style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, letterSpacing: ".14em" }}>
+                  {ordinal(courant.manche)} MANCHE · {courant.demi === "top" ? "HAUT" : "BAS"}
+                </div>
+                <div
+                  style={{
+                    fontFamily: FF_MONO, fontWeight: 700, fontSize: 30,
+                    color: T.clay, margin: "2px 0 8px", letterSpacing: ".04em",
+                  }}
+                >
+                  {concept.code}
+                </div>
+                <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.5, color: "rgba(239,243,234,.9)" }}>
+                  {courant.description}
+                </p>
+                {courant.frappeur && (
+                  <div
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10, marginTop: 12,
+                      flexWrap: "wrap", fontFamily: FF_MONO, fontSize: 10.5, color: T.dim,
+                    }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <Img src={PORTRAIT(courant.idFrappeur)} alt="" size={38} rond
+                           style={{ background: "rgba(239,243,234,.09)" }} />
+                      <span>
+                        <span style={{ color: T.chalk, display: "block" }}>{courant.frappeur}</span>
+                        <span style={{ fontSize: 9 }}>
+                          frappeur {COTE[courant.coteFrappeur] || ""}
+                        </span>
+                      </span>
+                    </span>
+                    <span style={{ color: T.clay, fontSize: 13 }}>×</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <Img src={PORTRAIT(courant.idLanceur)} alt="" size={38} rond
+                           style={{ background: "rgba(239,243,234,.09)" }} />
+                      <span>
+                        <span style={{ color: T.chalk, display: "block" }}>{courant.lanceur}</span>
+                        <span style={{ fontSize: 9 }}>
+                          lanceur {COTE[courant.coteLanceur] || ""}
+                        </span>
+                      </span>
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Mode revision : pas d'action a montrer, mais on garde l'identite visuelle */}
+          {!ancre && (
+            <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
+              <Losange concept={concept} size={78} animate />
+              <div
+                style={{
+                  fontFamily: FF_MONO, fontWeight: 700, fontSize: 28,
+                  color: T.clay, letterSpacing: ".04em",
+                }}
+              >
+                {concept.code}
+              </div>
+            </div>
+          )}
+
+          {/* LE CLIP — seulement si l'action a ete filmee */}
+          {courant.clip && (
+            <div style={{ marginTop: 14 }}>
+              <video
+                key={courant.clip.url}
+                src={courant.clip.url}
+                poster={courant.clip.poster}
+                controls
+                preload="none"
+                playsInline
+                style={{
+                  width: "100%", display: "block", borderRadius: 3,
+                  background: "#000", border: "1px solid rgba(239,243,234,.2)",
+                }}
+              />
+              <p
+                style={{
+                  fontFamily: FF_MONO, fontSize: 10, color: T.dim,
+                  margin: "6px 0 0", letterSpacing: ".04em",
+                }}
+              >
+                {courant.clip.titre}
+                {courant.clip.duree ? ` · ${courant.clip.duree}` : ""}
+              </p>
+            </div>
+          )}
+
+          <h2
+            style={{
+              fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 40, lineHeight: 1,
+              textTransform: "uppercase", margin: "34px 0 6px", letterSpacing: ".01em",
+            }}
+          >
+            {concept.titre}
+          </h2>
+          <p style={{ fontStyle: "italic", color: T.sodium, fontSize: 15.5, margin: "0 0 20px" }}>
+            {concept.gist}
+          </p>
+
+          {concept.corps.map((p, i) => (
+            <p key={i} style={{ fontSize: 16, lineHeight: 1.68, margin: "0 0 15px", color: "rgba(239,243,234,.93)" }}>
+              {texteAvecKInverse(p)}
+            </p>
+          ))}
+
+          <div style={{ borderLeft: `3px solid ${T.clay}`, paddingLeft: 14, margin: "22px 0 26px" }}>
+            <div style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em", color: T.dim }}>
+              À RETENIR
+            </div>
+            <p style={{ margin: "5px 0 0", fontSize: 16.5, lineHeight: 1.45 }}>{concept.retenir}</p>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+            {/* On ne peut cocher une notion que si elle s'est vraiment produite. */}
+            {ancre && !dejaVu && (
+              <button className="alm-btn" onClick={noter} style={btnStyle(true)}>
+                Noter dans le carnet
+              </button>
+            )}
+            {dejaVu && (
+              <span style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, letterSpacing: ".1em" }}>
+                ✓ DÉJÀ NOTÉE
+              </span>
+            )}
+            {consulte ? (
+              <button className="alm-btn" onClick={() => setConsulte(null)} style={btnStyle(!dejaVu)}>
+                Retour à cette nuit
+              </button>
+            ) : (
+              liste.length > 1 && (
+                <button
+                  className="alm-btn"
+                  onClick={() => setIdx((idx + 1) % liste.length)}
+                  style={btnStyle(false)}
+                >
+                  Une autre de cette nuit
+                </button>
+              )
+            )}
+            {!consulte && (
+              <span style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, marginLeft: "auto" }}>
+                {nouveaux.length
+                  ? `${nouveaux.length} notion${nouveaux.length > 1 ? "s" : ""} neuve${nouveaux.length > 1 ? "s" : ""} dans ce match`
+                  : "tout ce match est déjà noté"}
+              </span>
+            )}
+          </div>
+        </article>
+      )}
+
+      {phase === "ok" && !courant && (
+        <p style={{ fontSize: 16 }}>
+          Ce match ne contenait aucune action reconnue par l'almanach. Ça arrive : essaie une autre équipe.
+        </p>
+      )}
+
+      {/* ---------- LE CARNET ---------- */}
+      <section style={{ marginTop: 46 }}>
+        <button
+          className="alm-btn"
+          onClick={() => setOuvertCarnet(!ouvertCarnet)}
+          aria-expanded={ouvertCarnet}
+          style={{
+            all: "unset", cursor: "pointer", display: "flex", alignItems: "center",
+            gap: 10, width: "100%", borderTop: "1px solid rgba(239,243,234,.22)", paddingTop: 14,
+          }}
+        >
+          <span
+            style={{
+              fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 24,
+              textTransform: "uppercase", letterSpacing: ".03em",
+            }}
+          >
+            Le carnet
+          </span>
+          <span style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>
+            {ouvertCarnet ? "▾ replier" : "▸ déplier"}
+          </span>
+        </button>
+
+        {ouvertCarnet && (
+          <div
+            className="alm-rise"
+            style={{
+              marginTop: 18, display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))", gap: 12,
+            }}
+          >
+            {CONCEPTS.map((c) => {
+              const vu = appris.includes(c.id);
+              return (
+                <button
+                  key={c.id}
+                  className="alm-cell"
+                  onClick={() => setConsulte(c.id)}
+                  aria-label={`Ouvrir la fiche : ${c.titre}`}
+                  title={c.titre}
+                  style={{
+                    all: "unset", cursor: "pointer", display: "block", boxSizing: "border-box",
+                    border: `1px solid rgba(239,243,234,${vu ? ".26" : ".1"})`,
+                    background: consulte === c.id
+                      ? "rgba(194,96,58,.22)"
+                      : vu ? "rgba(11,36,26,.6)" : "rgba(11,36,26,.28)",
+                    borderRadius: 2, padding: "8px 6px 10px", textAlign: "center",
+                    opacity: vu ? 1 : .55,
+                  }}
+                >
+                  <Losange concept={c} size={62} muted={!vu} animate={justInked === c.id} />
+                  <div
+                    style={{
+                      fontFamily: FF_MONO, fontSize: 10, color: vu ? T.clay : T.dim,
+                      fontWeight: 700, letterSpacing: ".04em",
+                    }}
+                  >
+                    {c.code}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10.5, lineHeight: 1.25, color: T.dim, marginTop: 3,
+                      overflow: "hidden", textOverflow: "ellipsis",
+                    }}
+                  >
+                    {c.titre}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+/* ================================================================== *
+ *  VUE « LES NUITS »
+ *  L'axe horizontal va de 17h a 07h heure de Paris, soit 14 heures,
+ *  ce qui place minuit exactement au centre : a gauche ce qui se
+ *  regarde le soir, a droite ce qui demande un reveil.
+ *  68 % des matchs changent de date entre le calendrier MLB et le
+ *  calendrier parisien — d'ou le regroupement par NUIT, pas par jour.
+ * ================================================================== */
+const TZ = "Europe/Paris";
+const DEBUT = 17;          // bord gauche de la piste, en heures
+const FIN = 31;            // bord droit (07h le lendemain)
+const AUBE = 7;            // avant 7h, on appartient a la nuit precedente
+const PASTILLE_PX = 56;    // largeur reelle d'une pastille
+const VOIE_PX = 22;        // hauteur d'une voie d'empilement
+const NB_NUITS = 14;
+
+const fmtParis = new Intl.DateTimeFormat("fr-FR", {
+  timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+});
+
+function decalerJour(iso, n) {
+  const d = new Date(`${iso}T12:00:00Z`); // midi : immunise contre les changements d'heure
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+/* Renvoie la nuit d'appartenance et l'heure "etendue" (25.17 = 01h10). */
+function nuitDe(isoUtc) {
+  const p = Object.fromEntries(
+    fmtParis.formatToParts(new Date(isoUtc)).map((x) => [x.type, x.value])
+  );
+  let h = Number(p.hour) + Number(p.minute) / 60;
+  let jour = `${p.year}-${p.month}-${p.day}`;
+  if (h < AUBE) {
+    h += 24;
+    jour = decalerJour(jour, -1);
+  }
+  return { jour, h, hhmm: `${p.hour}:${p.minute}` };
+}
+
+/* Une nuit chevauche toujours deux dates : la soiree et le petit matin.
+   L'etiqueter d'un seul jour induirait en erreur pour un match a 01h10. */
+function libelleNuit(iso) {
+  const court = (s) => {
+    const d = new Date(`${s}T12:00:00Z`);
+    const j = d.toLocaleDateString("fr-FR", { weekday: "short", timeZone: "UTC" }).replace(".", "");
+    const m = d.toLocaleDateString("fr-FR", { day: "numeric", timeZone: "UTC" });
+    return `${j} ${m}`;
+  };
+  return { soir: court(iso), matin: court(decalerJour(iso, 1)) };
+}
+
+/* Empilement en voies : deux pastilles trop proches passent l'une sous l'autre. */
+function repartirEnVoies(matchs, largeur) {
+  const voies = [];
+  for (const m of matchs) {
+    let i = voies.findIndex((v) => m.pct - v[v.length - 1].pct >= largeur);
+    if (i === -1) {
+      voies.push([m]);
+      i = voies.length - 1;
+    } else {
+      voies[i].push(m);
+    }
+    m.voie = i;
+  }
+  return Math.max(voies.length, 1);
+}
+
+/* ---------------------------------------------------------------- *
+ *  COTE DE RENCONTRE — methode log5 (Bill James), en cotes.
+ *  On combine les deux pourcentages de victoire puis on applique
+ *  l'avantage du terrain : entre deux equipes egales, l'equipe qui
+ *  recoit gagne environ 54 % du temps, soit un rapport de cotes 1,17.
+ *  C'est une estimation grossiere : elle ignore les lanceurs partants,
+ *  les blessures et la forme du moment.
+ * ---------------------------------------------------------------- */
+const AVANTAGE_TERRAIN = 1.17;
+
+function coteDomicile(pctDom, pctExt) {
+  if (pctDom == null || pctExt == null) return null;
+  const borne = (p) => Math.min(0.85, Math.max(0.15, p)); // evite les cotes infinies
+  const od = borne(pctDom) / (1 - borne(pctDom));
+  const oe = borne(pctExt) / (1 - borne(pctExt));
+  const r = (od / oe) * AVANTAGE_TERRAIN;
+  return r / (1 + r);
+}
+
+/* ---------------------------------------------------------------- *
+ *  INDICE DE SUSPENSE — somme des variations absolues de probabilite
+ *  de victoire sur l'ensemble du match. Un match a sens unique tourne
+ *  autour de 100, un renversement repete depasse 400.
+ *  Bornes de deciles mesurees sur 34 matchs de juillet 2026 :
+ *  mediane 211, quartiles 166 et 276.
+ *  Cet indice NE REVELE PAS le vainqueur — c'est tout son interet.
+ * ---------------------------------------------------------------- */
+const DECILES = [92, 119, 171, 188, 211, 241, 260, 313, 363];
+const CHAMPS_WP = "fields=homeTeamWinProbabilityAdded";
+
+function noteSuspense(indice) {
+  let n = 0;
+  while (n < DECILES.length && indice >= DECILES[n]) n++;
+  return n + 1; // 1 a 10
+}
+
+/* ---------------------------------------------------------------- *
+ *  INDICE D'ENVIE
+ *  Ce qui decide qu'on regarde un match depuis Paris, par ordre de
+ *  poids reel : l'heure d'abord (un match a 4h ne sera pas regarde,
+ *  quel que soit l'affiche), puis l'incertitude, puis le niveau des
+ *  deux equipes. La cote sert ici a l'envers : elle predit mal le
+ *  vainqueur, mais un 50/50 annonce un match plus disputé qu'un 75/25.
+ *  Volontairement grossier — le but est de donner envie, pas de parier.
+ * ---------------------------------------------------------------- */
+function indiceEnvie(m, bilans) {
+  if (m.etat === "Final") return -1;
+  const p = m.coteDom ?? 0.5;
+  const serre = 1 - Math.abs(2 * p - 1);
+  const niveau = Math.max(
+    0,
+    Math.min(1, (((bilans[m.idDom]?.pct ?? 0.5) + (bilans[m.idExt]?.pct ?? 0.5)) / 2 - 0.42) / 0.16)
+  );
+  const heure = m.h < 24 ? 1 : m.h < 25.5 ? 0.3 : 0; // jusqu'a 01h30, ca reste jouable
+  return 0.42 * heure + 0.3 * serre + 0.2 * niveau + (m.neutre ? 0.08 : 0);
+}
+
+/* Formule la raison principale, en clair. */
+function raisonEnvie(m, bilans) {
+  const r = [];
+  if (m.h < 24) r.push(`à ${m.hhmm}, sans réveil`);
+  else if (m.h < 25.5) r.push(`à ${m.hhmm}, encore tenable`);
+  if (m.neutre && m.stade) r.push(`à ${m.stade}`);
+  const p = m.coteDom;
+  if (p != null && Math.abs(2 * p - 1) < 0.06) r.push("donné à pile ou face");
+  const q = ((bilans[m.idDom]?.pct ?? 0.5) + (bilans[m.idExt]?.pct ?? 0.5)) / 2;
+  if (q > 0.55) r.push("deux équipes du haut de tableau");
+  return r.slice(0, 2).join(", ") || `à ${m.hhmm}`;
+}
+
+const GRADUATIONS = [18, 21, 24, 27, 30];
+const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
+
+function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
+  const fini = m.etat === "Final";
+  const live = m.etat === "Live";
+  const p = m.coteDom;
+  // Une ligne d'appoint n'apparait que s'il y a quelque chose a dire.
+  const appoint =
+    note != null
+      ? `${note}/10`
+      : fini && spoilers
+      ? `${m.scoreExt}–${m.scoreDom}`
+      : null;
+
+  return (
+    <div
+      title={m.infobulle}
+      style={{
+        position: "absolute",
+        left: `${m.pct * 100}%`,
+        top: m.voie * hauteur,
+        width: `${largeur * 100}%`,
+        height: hauteur - 4,
+        padding: "3px 4px 0",
+        borderRadius: 2,
+        boxSizing: "border-box",
+        background: suivi ? "rgba(194,96,58,.9)" : "rgba(11,36,26,.85)",
+        border: `1px solid ${
+          m.neutre ? T.sodium : live ? T.sodium : suivi ? T.clay : "rgba(239,243,234,.24)"
+        }`,
+        boxShadow: m.neutre ? `0 0 0 1px ${T.sodium}` : undefined,
+        color: suivi ? "#12241B" : T.chalk,
+        opacity: fini && !spoilers && note == null ? 0.6 : 1,
+        fontFamily: FF_MONO,
+        lineHeight: 1,
+        overflow: "hidden",
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+        <Img src={CAP(m.idExt, !suivi)} alt={m.ext} size={14} />
+        <span style={{ fontSize: 7.5, opacity: .5 }}>@</span>
+        <Img src={CAP(m.idDom, !suivi)} alt={m.dom} size={14} />
+        {m.neutre && (
+          <span style={{ marginLeft: "auto", fontSize: 9, color: suivi ? "#12241B" : T.sodium }}>◆</span>
+        )}
+      </div>
+
+      {appoint && (
+        <div
+          style={{
+            fontSize: 8.5, marginTop: 2, fontWeight: 700,
+            color: note != null ? (suivi ? "#12241B" : T.sodium) : "inherit",
+          }}
+        >
+          {appoint}
+        </div>
+      )}
+
+      {/* cote de rencontre : la part claire revient a l'equipe qui recoit */}
+      {p != null && !fini && (
+        <div
+          style={{
+            position: "absolute", left: 0, right: 0, bottom: 0, height: 2,
+            background: suivi ? "rgba(18,36,27,.35)" : "rgba(239,243,234,.18)",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute", right: 0, top: 0, bottom: 0,
+              width: `${p * 100}%`,
+              background: suivi ? "#12241B" : T.sodium,
+              opacity: suivi ? .55 : .7,
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {} }) {
+  const [ancre, setAncre] = useState(() => decalerJour(new Date().toISOString().slice(0, 10), -1));
+  const [matchs, setMatchs] = useState([]);
+  const [phase, setPhase] = useState("load");
+  const [erreur, setErreur] = useState("");
+  const [spoilers, setSpoilers] = useState(false);
+  const [ouvertEquipes, setOuvertEquipes] = useState(false);
+  // La largeur d'empilement doit suivre la largeur reelle de la piste :
+  // sur mobile, 15 matchs groupes a 01h s'empilent forcement davantage.
+  const [suspense, setSuspense] = useState({}); // gamePk -> indice brut
+  const [jauge, setJauge] = useState({ etat: "repos", fait: 0, total: 0 });
+  const pisteRef = useRef(null);
+  const [pisteW, setPisteW] = useState(640);
+  useEffect(() => {
+    const el = pisteRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(([e]) => setPisteW(e.contentRect.width || 640));
+    ro.observe(el);
+    return () => ro.disconnect();
+  });
+  const largeur = Math.min(0.35, Math.max(0.05, PASTILLE_PX / pisteW));
+  // Une ligne d'appoint (score ou note) fait grandir les pastilles.
+  const ligneAppoint = spoilers || Object.keys(suspense).length > 0;
+  const hauteurVoie = ligneAppoint ? VOIE_PX + 12 : VOIE_PX;
+
+  const nuits = useMemo(
+    () => Array.from({ length: NB_NUITS }, (_, i) => decalerJour(ancre, i)),
+    [ancre]
+  );
+
+  useEffect(() => {
+    let annule = false;
+    setPhase("load");
+    setErreur("");
+    // On tire une journee MLB de plus : une nuit parisienne deborde sur le
+    // lendemain americain. On volontairement PAS `broadcasts` (x3 le poids
+    // pour des diffuseurs americains inutiles depuis la France).
+    fetch(
+      `${API}/schedule?sportId=1&startDate=${ancre}&endDate=${decalerJour(ancre, NB_NUITS)}` +
+        `&hydrate=team,probablePitcher`
+    )
+      .then((r) => r.json())
+      .then((d) => {
+        if (annule) return;
+        const out = [];
+        for (const jour of d.dates || []) {
+          for (const g of jour.games || []) {
+            const { jour: nuit, h, hhmm } = nuitDe(g.gameDate);
+            const brut = (h - DEBUT) / (FIN - DEBUT);
+            out.push({
+              id: g.gamePk,
+              nuit,
+              h,
+              hhmm,
+              avant: brut < 0,
+              brut,
+              ext: g.teams.away.team.abbreviation || "?",
+              dom: g.teams.home.team.abbreviation || "?",
+              idExt: g.teams.away.team.id,
+              idDom: g.teams.home.team.id,
+              scoreExt: g.teams.away.score,
+              scoreDom: g.teams.home.score,
+              etat: g.status?.abstractGameState,
+              stade: g.venue?.name || "",
+              idStade: g.venue?.id,
+              typeMatch: g.gameType,
+              infobulle:
+                `${g.teams.away.team.name} @ ${g.teams.home.team.name} — ${hhmm} (Paris)` +
+                (g.venue?.name ? `\n${g.venue.name}` : "") +
+                (g.teams.away.probablePitcher || g.teams.home.probablePitcher
+                  ? `\nLanceurs annoncés : ${g.teams.away.probablePitcher?.fullName || "?"}` +
+                    ` / ${g.teams.home.probablePitcher?.fullName || "?"}`
+                  : ""),
+            });
+          }
+        }
+        setMatchs(out);
+        setPhase("ok");
+      })
+      .catch((e) => {
+        if (annule) return;
+        setErreur(String(e?.message || e));
+        setPhase("erreur");
+      });
+    return () => {
+      annule = true;
+    };
+  }, [ancre]); // volontairement pas `stadeHabituel` : il arrive plus tard et
+               // relancerait une requete inutile. Le terrain neutre se calcule
+               // au rendu, ci-dessous.
+
+  const parId = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
+  const toutes = suivies.length === 0; // aucune selection = tout afficher
+  const estSuivi = (m) => toutes || suivies.includes(m.idExt) || suivies.includes(m.idDom);
+
+  const parNuit = useMemo(() => {
+    const carte = new Map(nuits.map((n) => [n, []]));
+    for (const m of matchs) {
+      if (!carte.has(m.nuit)) continue;
+      if (!toutes && !estSuivi(m)) continue;
+      carte.get(m.nuit).push(m);
+    }
+    for (const [, liste] of carte) {
+      liste.sort((a, b) => a.h - b.h);
+      for (const m of liste) {
+        // Terrain neutre : dix matchs par saison (Mexico, Las Vegas, Field of
+        // Dreams, Little League Classic). On exclut le printemps, ou tout le
+        // monde joue hors de chez soi.
+        const habituel = stadeHabituel[m.idDom];
+        m.neutre = !["S", "E"].includes(m.typeMatch) && !!habituel && m.idStade !== habituel;
+        m.coteDom = coteDomicile(bilans[m.idDom]?.pct, bilans[m.idExt]?.pct);
+      }
+      for (const m of liste) m.pct = Math.max(0, Math.min(1 - largeur, m.brut));
+      repartirEnVoies(liste, largeur);
+    }
+    return carte;
+  }, [matchs, nuits, suivies, toutes, largeur, stadeHabituel, bilans]);
+
+  // Les trois matchs a venir les plus tentants de la fenetre affichee.
+  const aVoir = useMemo(
+    () =>
+      [...parNuit.values()]
+        .flat()
+        .map((m) => ({ m, s: indiceEnvie(m, bilans) }))
+        .filter((x) => x.s > 0)
+        .sort((a, b) => b.s - a.s)
+        // Une meme affiche revient plusieurs fois dans une serie : on ne
+        // garde que sa meilleure occurrence, pour varier le panneau.
+        .filter(
+          (x, i, tout) =>
+            tout.findIndex((y) => y.m.idExt === x.m.idExt && y.m.idDom === x.m.idDom) === i
+        )
+        .slice(0, 3)
+        .map((x) => x.m),
+    [parNuit, bilans]
+  );
+
+  const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
+  const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
+
+  // La nuit "en cours" : avant 7h du matin, on est encore dans celle d'hier.
+  const nuitCourante = useMemo(() => {
+    const n = new Date();
+    const h = Number(
+      new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" })
+        .format(n)
+    );
+    const auj = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
+    return h < AUBE ? decalerJour(auj, -1) : auj;
+  }, []);
+
+  /* Interroge winProbability pour les matchs termines actuellement affiches.
+     Le filtre `fields` fait tomber la reponse de 1,1 Mo a 9,5 Ko par match ;
+     sans lui, la fonctionnalite serait inutilisable. */
+  const jauger = async () => {
+    const cibles = [...parNuit.values()]
+      .flat()
+      .filter((m) => m.etat === "Final" && suspense[m.id] == null)
+      .map((m) => m.id);
+    if (!cibles.length) return;
+    const lot = cibles.slice(0, 45); // garde-fou : ~430 Ko maximum
+    setJauge({ etat: "cours", fait: 0, total: lot.length });
+    const trouve = {};
+    for (let i = 0; i < lot.length; i += 6) {
+      const paquet = lot.slice(i, i + 6);
+      await Promise.all(
+        paquet.map(async (pk) => {
+          try {
+            const w = await fetch(`${API}/game/${pk}/winProbability?${CHAMPS_WP}`).then((r) => r.json());
+            trouve[pk] = (Array.isArray(w) ? w : []).reduce(
+              (a, x) => a + Math.abs(x.homeTeamWinProbabilityAdded || 0),
+              0
+            );
+          } catch {
+            /* un match manquant n'empeche pas les autres */
+          }
+        })
+      );
+      setJauge((j) => ({ ...j, fait: Math.min(j.total, i + paquet.length) }));
+    }
+    setSuspense((s) => ({ ...s, ...trouve }));
+    setJauge({ etat: "fini", fait: lot.length, total: lot.length });
+  };
+
+  const basculer = (id) =>
+    setSuivies(suivies.includes(id) ? suivies.filter((x) => x !== id) : [...suivies, id]);
+
+  return (
+    <div className="alm-rise">
+      {/* --- barre de controle --- */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
+        <button className="alm-btn" onClick={() => setAncre(decalerJour(ancre, -7))} style={btnStyle(false)}>
+          ◂ semaine
+        </button>
+        <button className="alm-btn" onClick={() => setAncre(decalerJour(ancre, 7))} style={btnStyle(false)}>
+          semaine ▸
+        </button>
+        <button
+          className="alm-btn"
+          onClick={() => setAncre(decalerJour(new Date().toISOString().slice(0, 10), -1))}
+          style={btnStyle(false)}
+        >
+          aujourd'hui
+        </button>
+        <button className="alm-btn" onClick={jauger} disabled={jauge.etat === "cours"} style={btnStyle(false)}>
+          {jauge.etat === "cours"
+            ? `jauge… ${jauge.fait}/${jauge.total}`
+            : "Jauger le suspense"}
+        </button>
+        <label
+          style={{
+            fontFamily: FF_MONO, fontSize: 10, color: T.dim, letterSpacing: ".08em",
+            display: "flex", alignItems: "center", gap: 6, marginLeft: "auto", cursor: "pointer",
+          }}
+        >
+          <input type="checkbox" checked={spoilers} onChange={(e) => setSpoilers(e.target.checked)} />
+          AFFICHER LES SCORES
+        </label>
+      </div>
+
+      {/* --- equipes suivies : toujours visibles, jamais repliees --- */}
+      <div
+        style={{
+          display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap",
+          borderTop: "1px solid rgba(239,243,234,.18)", paddingTop: 12, marginBottom: 14,
+        }}
+      >
+        <span
+          style={{
+            fontFamily: FF_MONO, fontSize: 10, color: T.sodium,
+            letterSpacing: ".12em", marginRight: 4,
+          }}
+        >
+          JE SUIS
+        </span>
+
+        {toutes ? (
+          <span style={{ fontFamily: FF_MONO, fontSize: 11, color: T.chalk }}>
+            les 30 équipes
+          </span>
+        ) : (
+          suivies.map((id) => (
+            <button
+              key={id}
+              className="alm-cell"
+              onClick={() => basculer(id)}
+              title={`Ne plus suivre ${parId[id]?.name || ""}`}
+              style={{
+                all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 10,
+                fontWeight: 700, padding: "4px 7px", borderRadius: 2,
+                background: "rgba(194,96,58,.9)", color: "#12241B",
+              }}
+            >
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <Img src={CAP(id, false)} alt="" size={16} />
+                {parId[id]?.abbreviation || id} ×
+              </span>
+            </button>
+          ))
+        )}
+
+        <button
+          className="alm-btn"
+          onClick={() => setOuvertEquipes(!ouvertEquipes)}
+          aria-expanded={ouvertEquipes}
+          style={{
+            all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 10,
+            color: T.clay, borderBottom: "1px solid currentColor", marginLeft: 4,
+          }}
+        >
+          {ouvertEquipes ? "fermer" : "modifier"}
+        </button>
+      </div>
+
+      {ouvertEquipes && (
+        <div className="alm-rise" style={{ marginBottom: 18 }}>
+          <div
+            style={{
+              display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(62px, 1fr))", gap: 6,
+            }}
+          >
+            {teams.map((t) => {
+              const on = suivies.includes(t.id);
+              return (
+                <button
+                  key={t.id}
+                  className="alm-cell"
+                  onClick={() => basculer(t.id)}
+                  title={t.name}
+                  aria-pressed={on}
+                  style={{
+                    all: "unset", cursor: "pointer", display: "block", boxSizing: "border-box",
+                    textAlign: "center", padding: "6px 2px", borderRadius: 2,
+                    fontFamily: FF_MONO, fontSize: 10, fontWeight: 700,
+                    background: on ? "rgba(194,96,58,.9)" : "rgba(11,36,26,.4)",
+                    color: on ? "#12241B" : T.dim,
+                    border: `1px solid ${on ? T.clay : "rgba(239,243,234,.14)"}`,
+                  }}
+                >
+                  <Img
+                    src={ROND(t.id)}
+                    alt=""
+                    size={34}
+                    style={{ margin: "0 auto 3px" }}
+                  />
+                  {t.abbreviation}
+                </button>
+              );
+            })}
+          </div>
+          <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, margin: "10px 0 0" }}>
+            Ne rien sélectionner affiche les 30 équipes.{" "}
+            <button
+              className="alm-btn"
+              onClick={() => setSuivies([])}
+              style={{
+                all: "unset", cursor: "pointer", color: T.clay,
+                borderBottom: "1px solid currentColor",
+              }}
+            >
+              tout désélectionner
+            </button>
+          </p>
+        </div>
+      )}
+
+      {phase === "load" && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
+          Conversion des horaires…
+        </p>
+      )}
+
+      {phase === "erreur" && (
+        <div style={{ border: `1px solid ${T.clay}`, padding: 18, borderRadius: 3 }}>
+          <p style={{ margin: 0, fontSize: 15 }}>Le calendrier n'est pas arrivé.</p>
+          <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, margin: "8px 0 0" }}>{erreur}</p>
+        </div>
+      )}
+
+      {phase === "ok" && (
+        <>
+          {/* --- a ne pas rater --- */}
+          {aVoir.length > 0 && (
+            <div style={{ marginBottom: 22 }}>
+              <div
+                style={{
+                  fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
+                  color: T.sodium, marginBottom: 8,
+                }}
+              >
+                À NE PAS RATER
+              </div>
+              <div style={{ display: "grid", gap: 8 }}>
+                {aVoir.map((m) => {
+                  const l = libelleNuit(m.nuit);
+                  return (
+                    <div
+                      key={m.id}
+                      title={m.infobulle}
+                      style={{
+                        display: "flex", alignItems: "center", gap: 10,
+                        background: "rgba(11,36,26,.6)",
+                        border: `1px solid ${m.h < 24 ? "rgba(242,206,107,.5)" : "rgba(239,243,234,.18)"}`,
+                        borderRadius: 3, padding: "9px 12px",
+                      }}
+                    >
+                      <Img src={CAP(m.idExt)} alt="" size={26} />
+                      <Img src={CAP(m.idDom)} alt="" size={26} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontFamily: FF_MONO, fontSize: 11.5, color: T.chalk }}>
+                          {m.ext} <span style={{ opacity: .5 }}>@</span> {m.dom}
+                          <span style={{ color: T.dim }}> · {l.soir}</span>
+                        </div>
+                        <div style={{ fontSize: 13, color: T.sodium, fontStyle: "italic" }}>
+                          {raisonEnvie(m, bilans)}
+                        </div>
+                      </div>
+                      {m.h < 24 && (
+                        <span
+                          style={{
+                            fontFamily: FF_MONO, fontSize: 9, letterSpacing: ".1em",
+                            color: T.sodium, whiteSpace: "nowrap",
+                          }}
+                        >
+                          EN SOIRÉE
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* --- graduation --- */}
+          <div style={{ display: "flex", gap: 12, marginBottom: 6 }}>
+            <div style={{ width: 62, flexShrink: 0 }} />
+            <div ref={pisteRef} style={{ position: "relative", flex: 1, height: 14 }}>
+              {GRADUATIONS.map((h) => (
+                <div
+                  key={h}
+                  style={{
+                    position: "absolute", left: `${pos(h)}%`, transform: "translateX(-50%)",
+                    fontFamily: FF_MONO, fontSize: 9, letterSpacing: ".06em",
+                    color: h === 24 ? T.sodium : T.dim,
+                  }}
+                >
+                  {String(h % 24).padStart(2, "0")}h
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* --- les nuits --- */}
+          {nuits.map((n) => {
+            const liste = parNuit.get(n) || [];
+            const voies = liste.length ? Math.max(...liste.map((m) => m.voie)) + 1 : 1;
+            const l = libelleNuit(n);
+            const ceSoir = n === nuitCourante;
+            return (
+              <div key={n} style={{ display: "flex", gap: 12, marginBottom: 4 }}>
+                <div
+                  style={{
+                    width: 62, flexShrink: 0, fontFamily: FF_MONO, fontSize: 10,
+                    color: T.dim, paddingTop: 4, textAlign: "right", lineHeight: 1.35,
+                  }}
+                >
+                  {ceSoir && (
+                    <div style={{ color: T.sodium, fontSize: 8, letterSpacing: ".1em" }}>CE SOIR</div>
+                  )}
+                  <div style={{ color: ceSoir ? T.sodium : T.chalk }}>{l.soir}</div>
+                  <div style={{ fontSize: 8.5, opacity: .75 }}>→ {l.matin}</div>
+                </div>
+                <div
+                  style={{
+                    position: "relative", flex: 1, minHeight: 30, height: voies * hauteurVoie + 6,
+                    borderTop: `1px solid ${ceSoir ? "rgba(242,206,107,.4)" : "rgba(239,243,234,.07)"}`,
+                  }}
+                >
+                  {/* moitie soir / moitie nuit */}
+                  <div
+                    style={{
+                      position: "absolute", left: 0, width: "50%", top: 0, bottom: 0,
+                      background: "rgba(242,206,107,.045)",
+                    }}
+                  />
+                  <div
+                    style={{
+                      position: "absolute", left: "50%", top: 0, bottom: 0, width: 1,
+                      background: "rgba(242,206,107,.45)",
+                    }}
+                  />
+                  {liste.map((m) => (
+                    <Pastille
+                      key={m.id}
+                      m={{
+                        ...m,
+                        infobulle:
+                          m.infobulle +
+                          (m.coteDom != null && m.etat !== "Final"
+                            ? `\nCote : ${Math.round(m.coteDom * 100)} % pour ${m.dom} (à domicile)`
+                            : "") +
+                          (suspense[m.id] != null
+                            ? `\nSuspense : ${noteSuspense(suspense[m.id])}/10 — sans révéler le vainqueur`
+                            : ""),
+                      }}
+                      spoilers={spoilers}
+                      suivi={estSuivi(m)}
+                      largeur={largeur}
+                      hauteur={hauteurVoie}
+                      note={suspense[m.id] != null ? noteSuspense(suspense[m.id]) : null}
+                    />
+                  ))}
+                  {!liste.length && (
+                    <div
+                      style={{
+                        fontFamily: FF_MONO, fontSize: 9, color: "rgba(147,166,151,.45)",
+                        paddingTop: 8, paddingLeft: 4,
+                      }}
+                    >
+                      aucun match
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          <p
+            style={{
+              fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 16, lineHeight: 1.7,
+            }}
+          >
+            {total} match{total > 1 ? "s" : ""} sur {NB_NUITS} nuits — dont{" "}
+            <span style={{ color: T.sodium }}>{soiree} en soirée</span>, avant minuit.
+            <br />
+            Chaque ligne est une nuit : elle court de 17h à 07h, minuit au centre. La zone claire
+            à gauche est ce qui se regarde sans réveil. Survole une pastille pour le stade et les
+            lanceurs annoncés.
+            <br />
+            <span style={{ color: T.sodium }}>◆</span> signale un match hors du stade habituel — dix
+            par saison, dont Mexico, Las Vegas et le champ de maïs de l'Iowa.
+            <br />
+            Le filet sous les matchs à venir donne la cote : la part claire revient à l'équipe qui
+            reçoit. Estimation à la louche, à partir des seuls bilans — elle sert surtout à repérer
+            les affiches serrées.
+            <br />
+            « Jauger le suspense » note les matchs terminés de 1 à 10 selon l'ampleur des
+            renversements. <strong>La note ne révèle pas le vainqueur</strong> : elle dit seulement
+            si le replay vaut les deux heures.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== *
+ *  COQUILLE : etat partage, onglets, chrome commun
+ * ================================================================== */
+export default function App() {
+  const [onglet, setOnglet] = useState("carnet"); // carnet | nuits
+  const [teams, setTeams] = useState([]);
+  const [appris, setAppris] = useState([]);
+  const [suivies, setSuivies] = useState([119]);
+  const [resetArme, setResetArme] = useState(false);
+
+  useEffect(() => {
+    loadState().then((s) => {
+      setAppris(s.appris || []);
+      setSuivies(s.suivies || [119]);
+    });
+  }, []);
+
+  // Bilans victoires/defaites : une seule requete pour les 30 equipes,
+  // base de la cote de rencontre (log5).
+  const [bilans, setBilans] = useState({});
+  useEffect(() => {
+    const saison = new Date().getFullYear();
+    fetch(
+      `${API}/standings?leagueId=103,104&season=${saison}&standingsTypes=regularSeason` +
+        `&fields=records,teamRecords,team,id,wins,losses`
+    )
+      .then((r) => r.json())
+      .then((d) => {
+        const m = {};
+        for (const rec of d.records || []) {
+          for (const tr of rec.teamRecords || []) {
+            const n = (tr.wins || 0) + (tr.losses || 0);
+            if (n > 0) m[tr.team.id] = { v: tr.wins, d: tr.losses, pct: tr.wins / n };
+          }
+        }
+        setBilans(m);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation,venue`)
+      .then((r) => r.json())
+      .then((d) => setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => {});
+  }, []);
+
+  // Stade habituel de chaque franchise : sert a reperer les terrains neutres.
+  const stadeHabituel = useMemo(
+    () => Object.fromEntries(teams.filter((t) => t.venue?.id).map((t) => [t.id, t.venue.id])),
+    [teams]
+  );
+
+  const majSuivies = (v) => {
+    setSuivies(v);
+    saveState({ suivies: v });
   };
 
   const vider = async () => {
@@ -721,6 +1884,7 @@ export default function Almanach() {
     .alm-btn { transition: background-color .18s, color .18s, border-color .18s; }
     .alm-btn:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 3px; }
     .alm-cell:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 2px; }
+    .alm-tab:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 3px; }
     select.alm-sel { -webkit-appearance:none; appearance:none; }
     @media (prefers-reduced-motion: reduce) {
       .alm-rise { animation: none; }
@@ -730,17 +1894,33 @@ export default function Almanach() {
 
   const mow = `repeating-linear-gradient(115deg, ${T.turf} 0 46px, ${T.turfLit} 46px 92px)`;
 
+  const Onglet = ({ id, children }) => (
+    <button
+      className="alm-tab"
+      onClick={() => setOnglet(id)}
+      aria-current={onglet === id ? "page" : undefined}
+      style={{
+        all: "unset", cursor: "pointer",
+        fontFamily: FF_DISPLAY, fontSize: 22, fontWeight: 700,
+        textTransform: "uppercase", letterSpacing: ".04em",
+        padding: "8px 0", marginRight: 24,
+        color: onglet === id ? T.chalk : "rgba(147,166,151,.7)",
+        borderBottom: `2px solid ${onglet === id ? T.clay : "transparent"}`,
+      }}
+    >
+      {children}
+    </button>
+  );
+
   return (
     <div style={{ background: mow, minHeight: "100%", color: T.chalk, fontFamily: FF_BODY }}>
       <style>{css}</style>
-      <div style={{ maxWidth: 760, margin: "0 auto", padding: "28px 20px 56px" }}>
+      <div style={{ maxWidth: 820, margin: "0 auto", padding: "28px 20px 56px" }}>
 
-        {/* ---------- bandeau ---------- */}
         <header
           style={{
             display: "flex", alignItems: "flex-end", justifyContent: "space-between",
-            gap: 16, flexWrap: "wrap", borderBottom: `1px solid rgba(239,243,234,.22)`,
-            paddingBottom: 12,
+            gap: 16, flexWrap: "wrap",
           }}
         >
           <div>
@@ -770,314 +1950,31 @@ export default function Almanach() {
           </div>
         </header>
 
-        {/* ---------- selecteur equipe ---------- */}
-        <div style={{ margin: "14px 0 22px", display: "flex", alignItems: "center", gap: 10 }}>
-          <label
-            htmlFor="eq"
-            style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".16em", color: T.dim }}
-          >
-            SUIVI DE
-          </label>
-          <select
-            id="eq"
-            className="alm-sel"
-            value={teamId}
-            onChange={(e) => setTeamId(Number(e.target.value))}
-            style={{
-              fontFamily: FF_MONO, fontSize: 12, color: T.chalk,
-              background: "rgba(11,36,26,.7)", border: `1px solid rgba(239,243,234,.28)`,
-              padding: "6px 10px", borderRadius: 2, cursor: "pointer",
-            }}
-          >
-            {(teams.length ? teams : [{ id: 119, name: "Los Angeles Dodgers" }]).map((t) => (
-              <option key={t.id} value={t.id} style={{ color: "#111" }}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        </div>
+        <nav
+          style={{
+            display: "flex", alignItems: "center", flexWrap: "wrap",
+            borderBottom: "1px solid rgba(239,243,234,.22)", margin: "16px 0 22px",
+          }}
+        >
+          <Onglet id="carnet">Le carnet</Onglet>
+          <Onglet id="nuits">Le programme</Onglet>
+        </nav>
 
-        {/* ---------- etats ---------- */}
-        {phase === "load" && (
-          <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
-            Dépouillement de la feuille de match…
-          </p>
+        {onglet === "carnet" ? (
+          <VueAlmanach teams={teams} appris={appris} setAppris={setAppris} suivies={suivies} />
+        ) : (
+          <VueNuits
+            teams={teams}
+            suivies={suivies}
+            setSuivies={majSuivies}
+            stadeHabituel={stadeHabituel}
+            bilans={bilans}
+          />
         )}
-
-        {phase === "erreur" && (
-          <div style={{ border: `1px solid ${T.clay}`, padding: 18, borderRadius: 3 }}>
-            <p style={{ margin: 0, fontSize: 15 }}>
-              La feuille de match n'est pas arrivée. L'API de MLB n'a pas répondu.
-            </p>
-            <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, margin: "8px 0 14px" }}>
-              {erreur}
-            </p>
-            <button className="alm-btn" onClick={() => charger(teamId)} style={btnStyle(true)}>
-              Réessayer
-            </button>
-          </div>
-        )}
-
-        {phase === "vide" && (
-          <p style={{ fontSize: 16 }}>
-            Aucun match terminé sur les douze derniers jours. Hors saison, ou pause du match des étoiles —
-            choisis une autre équipe en attendant.
-          </p>
-        )}
-
-        {phase === "ok" && courant && concept && (
-          <article ref={articleRef} key={courant.conceptId} className="alm-rise">
-            {/* en-tete : le match, ou la mention de consultation */}
-            <div
-              style={{
-                fontFamily: FF_MONO, fontSize: 11, color: T.dim,
-                letterSpacing: ".06em", marginBottom: 14,
-              }}
-            >
-              {ancre ? (
-                <>
-                  {game.teams.away.team.name} {game.teams.away.score} — {game.teams.home.score}{" "}
-                  {game.teams.home.team.name}
-                  <span style={{ color: "rgba(147,166,151,.55)" }}> · {dateFR(game.gameDate)}</span>
-                </>
-              ) : (
-                <span style={{ color: T.sodium }}>
-                  CONSULTÉE DEPUIS LE CARNET · absente de ce match
-                </span>
-              )}
-            </div>
-
-            {/* LA CASE — seulement si la notion est ancree dans une action */}
-            {ancre && (
-            <div
-              style={{
-                background: "rgba(11,36,26,.78)",
-                border: `1px solid rgba(239,243,234,.2)`,
-                borderRadius: 3, padding: 22,
-                display: "flex", gap: 22, alignItems: "center", flexWrap: "wrap",
-              }}
-            >
-              <div style={{ flexShrink: 0 }}>
-                <Losange concept={concept} size={104} animate />
-              </div>
-              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
-                <div style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, letterSpacing: ".14em" }}>
-                  {ordinal(courant.manche)} MANCHE · {courant.demi === "top" ? "HAUT" : "BAS"}
-                </div>
-                <div
-                  style={{
-                    fontFamily: FF_MONO, fontWeight: 700, fontSize: 30,
-                    color: T.clay, margin: "2px 0 8px", letterSpacing: ".04em",
-                  }}
-                >
-                  {concept.code}
-                </div>
-                <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.5, color: "rgba(239,243,234,.9)" }}>
-                  {courant.description}
-                </p>
-                {courant.frappeur && (
-                  <p style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, margin: "10px 0 0" }}>
-                    {courant.frappeur} <span style={{ opacity: .5 }}>vs</span> {courant.lanceur}
-                  </p>
-                )}
-              </div>
-            </div>
-            )}
-
-            {/* Mode revision : pas d'action a montrer, mais on garde l'identite visuelle */}
-            {!ancre && (
-              <div style={{ display: "flex", gap: 18, alignItems: "center" }}>
-                <Losange concept={concept} size={78} animate />
-                <div
-                  style={{
-                    fontFamily: FF_MONO, fontWeight: 700, fontSize: 28,
-                    color: T.clay, letterSpacing: ".04em",
-                  }}
-                >
-                  {concept.code}
-                </div>
-              </div>
-            )}
-
-            {/* LE CLIP — seulement si l'action a ete filmee */}
-            {courant.clip && (
-              <div style={{ marginTop: 14 }}>
-                <video
-                  key={courant.clip.url}
-                  src={courant.clip.url}
-                  poster={courant.clip.poster}
-                  controls
-                  preload="none"
-                  playsInline
-                  style={{
-                    width: "100%", display: "block", borderRadius: 3,
-                    background: "#000", border: `1px solid rgba(239,243,234,.2)`,
-                  }}
-                />
-                <p
-                  style={{
-                    fontFamily: FF_MONO, fontSize: 10, color: T.dim,
-                    margin: "6px 0 0", letterSpacing: ".04em",
-                  }}
-                >
-                  {courant.clip.titre}
-                  {courant.clip.duree ? ` · ${courant.clip.duree}` : ""}
-                </p>
-              </div>
-            )}
-
-            {/* LA NOTION */}
-            <h2
-              style={{
-                fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 40, lineHeight: 1,
-                textTransform: "uppercase", margin: "34px 0 6px", letterSpacing: ".01em",
-              }}
-            >
-              {concept.titre}
-            </h2>
-            <p style={{ fontStyle: "italic", color: T.sodium, fontSize: 15.5, margin: "0 0 20px" }}>
-              {concept.gist}
-            </p>
-
-            {concept.corps.map((p, i) => (
-              <p key={i} style={{ fontSize: 16, lineHeight: 1.68, margin: "0 0 15px", color: "rgba(239,243,234,.93)" }}>
-                {texteAvecKInverse(p)}
-              </p>
-            ))}
-
-            <div style={{ borderLeft: `3px solid ${T.clay}`, paddingLeft: 14, margin: "22px 0 26px" }}>
-              <div style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em", color: T.dim }}>
-                À RETENIR
-              </div>
-              <p style={{ margin: "5px 0 0", fontSize: 16.5, lineHeight: 1.45 }}>{concept.retenir}</p>
-            </div>
-
-            {/* actions */}
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-              {/* On ne peut cocher une notion que si elle s'est vraiment produite. */}
-              {ancre && !dejaVu && (
-                <button className="alm-btn" onClick={noter} style={btnStyle(true)}>
-                  Noter dans le carnet
-                </button>
-              )}
-              {dejaVu && (
-                <span style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, letterSpacing: ".1em" }}>
-                  ✓ DÉJÀ NOTÉE
-                </span>
-              )}
-              {consulte ? (
-                <button className="alm-btn" onClick={() => setConsulte(null)} style={btnStyle(!dejaVu)}>
-                  Retour à cette nuit
-                </button>
-              ) : (
-                liste.length > 1 && (
-                  <button
-                    className="alm-btn"
-                    onClick={() => setIdx((idx + 1) % liste.length)}
-                    style={btnStyle(false)}
-                  >
-                    Une autre de cette nuit
-                  </button>
-                )
-              )}
-              {!consulte && (
-                <span style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, marginLeft: "auto" }}>
-                  {nouveaux.length
-                    ? `${nouveaux.length} notion${nouveaux.length > 1 ? "s" : ""} neuve${nouveaux.length > 1 ? "s" : ""} dans ce match`
-                    : "tout ce match est déjà noté"}
-                </span>
-              )}
-            </div>
-          </article>
-        )}
-
-        {phase === "ok" && !courant && (
-          <p style={{ fontSize: 16 }}>
-            Ce match ne contenait aucune action reconnue par l'almanach. Ça arrive : essaie une autre équipe.
-          </p>
-        )}
-
-        {/* ---------- LE CARNET ---------- */}
-        <section style={{ marginTop: 46 }}>
-          <button
-            className="alm-btn"
-            onClick={() => setOuvertCarnet(!ouvertCarnet)}
-            aria-expanded={ouvertCarnet}
-            style={{
-              all: "unset", cursor: "pointer", display: "flex", alignItems: "center",
-              gap: 10, width: "100%", borderTop: `1px solid rgba(239,243,234,.22)`,
-              paddingTop: 14,
-            }}
-          >
-            <span
-              style={{
-                fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 24,
-                textTransform: "uppercase", letterSpacing: ".03em",
-              }}
-            >
-              Le carnet
-            </span>
-            <span style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>
-              {ouvertCarnet ? "▾ replier" : "▸ déplier"}
-            </span>
-          </button>
-
-          {ouvertCarnet && (
-            <div
-              className="alm-rise"
-              style={{
-                marginTop: 18,
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(96px, 1fr))",
-                gap: 12,
-              }}
-            >
-              {CONCEPTS.map((c) => {
-                const vu = appris.includes(c.id);
-                return (
-                  <button
-                    key={c.id}
-                    className="alm-cell"
-                    onClick={() => setConsulte(c.id)}
-                    aria-label={`Ouvrir la fiche : ${c.titre}`}
-                    title={c.titre}
-                    style={{
-                      all: "unset", cursor: "pointer", display: "block", boxSizing: "border-box",
-                      border: `1px solid rgba(239,243,234,${vu ? ".26" : ".1"})`,
-                      background: consulte === c.id
-                        ? "rgba(194,96,58,.22)"
-                        : vu ? "rgba(11,36,26,.6)" : "rgba(11,36,26,.28)",
-                      borderRadius: 2, padding: "8px 6px 10px", textAlign: "center",
-                      opacity: vu ? 1 : .55,
-                    }}
-                  >
-                    <Losange concept={c} size={62} muted={!vu} animate={justInked === c.id} />
-                    <div
-                      style={{
-                        fontFamily: FF_MONO, fontSize: 10, color: vu ? T.clay : T.dim,
-                        fontWeight: 700, letterSpacing: ".04em",
-                      }}
-                    >
-                      {c.code}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 10.5, lineHeight: 1.25, color: T.dim, marginTop: 3,
-                        overflow: "hidden", textOverflow: "ellipsis",
-                      }}
-                    >
-                      {c.titre}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </section>
 
         <footer
           style={{
-            marginTop: 40, paddingTop: 14, borderTop: `1px solid rgba(239,243,234,.14)`,
+            marginTop: 40, paddingTop: 14, borderTop: "1px solid rgba(239,243,234,.14)",
             fontFamily: FF_MONO, fontSize: 10, color: "rgba(147,166,151,.7)", lineHeight: 1.7,
           }}
         >
@@ -1099,7 +1996,7 @@ export default function Almanach() {
               <br />
             </>
           )}
-          Données : statsapi.mlb.com — usage personnel et éducatif.
+          Données : statsapi.mlb.com — usage personnel et éducatif. Horaires convertis en heure de Paris.
           <br />
           Les notions sont piochées dans le vrai déroulé du match ; les plus rares passent en premier,
           parce qu'un simple reviendra demain et pas un balk.
