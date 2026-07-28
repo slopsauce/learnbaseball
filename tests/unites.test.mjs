@@ -466,3 +466,84 @@ describe("compte a rebours", () => {
     assert.equal(A.compteARebours(dans(-30), T0), "c'est maintenant");
   });
 });
+
+describe("le quiz de révision", () => {
+  const vues = [
+    { conceptId: "sac_fly", description: "flies out, runner scores", manche: 3, demi: "top" },
+    { conceptId: "walk", description: "walks", manche: 5, demi: "bottom" },
+    { conceptId: "home_run", description: "hits a home run", manche: 7, demi: "top" },
+  ];
+  // Alea deterministe, pour que les tests ne clignotent pas.
+  const fixe = (v) => () => v;
+
+  test("produit quatre options dont la bonne", () => {
+    const q = A.fabriquerQuestion(vues, [], fixe(0));
+    assert.equal(q.options.length, 4);
+    assert.ok(q.options.some((o) => o.id === q.bon.id), "la bonne reponse doit figurer parmi les options");
+  });
+  test("ne propose jamais deux fois la même notion", () => {
+    const q = A.fabriquerQuestion(vues, [], fixe(0));
+    const ids = q.options.map((o) => o.id);
+    assert.equal(new Set(ids).size, 4, "options en double");
+  });
+  test("les distracteurs partagent la forme de la bonne réponse", () => {
+    // Le losange ne doit pas trahir la reponse : meme nombre de segments.
+    for (let i = 0; i < 20; i++) {
+      const q = A.fabriquerQuestion(vues, [], () => i / 20);
+      const memeForme = q.options.filter((o) => o.legs.length === q.bon.legs.length);
+      assert.ok(memeForme.length >= 2, `une seule option de la bonne forme : ${q.bon.id}`);
+    }
+  });
+  test("évite les notions déjà posées tant qu'il en reste", () => {
+    const q = A.fabriquerQuestion(vues, ["sac_fly", "walk"], fixe(0));
+    assert.equal(q.bon.id, "home_run", "doit piocher la seule notion non posee");
+  });
+  test("recycle quand toutes ont été posées", () => {
+    const q = A.fabriquerQuestion(vues, ["sac_fly", "walk", "home_run"], fixe(0));
+    assert.ok(q, "doit continuer a poser des questions plutot que s'arreter");
+  });
+  test("renvoie null faute d'actions", () => {
+    assert.equal(A.fabriquerQuestion([], [], fixe(0)), null);
+  });
+  test("ignore une action dont la notion n'existe plus au catalogue", () => {
+    const q = A.fabriquerQuestion([{ conceptId: "inexistant", description: "x" }], [], fixe(0));
+    assert.equal(q, null, "une notion inconnue ne doit pas produire de question bancale");
+  });
+  test("chaque option existe bien au catalogue", () => {
+    for (let i = 0; i < 20; i++) {
+      const q = A.fabriquerQuestion(vues, [], () => i / 20);
+      for (const o of q.options) assert.ok(A.BY_ID[o.id], `option inconnue : ${o.id}`);
+    }
+  });
+});
+
+describe("melanger", () => {
+  test("conserve tous les éléments", () => {
+    const src = [1, 2, 3, 4, 5];
+    const m = A.melanger(src, () => 0.5);
+    assert.deepEqual(m.slice().sort(), src);
+  });
+  test("ne modifie pas le tableau d'origine", () => {
+    const src = [1, 2, 3];
+    A.melanger(src, () => 0.9);
+    assert.deepEqual(src, [1, 2, 3]);
+  });
+});
+
+describe("le direct", () => {
+  test("abrège la manche sans révéler le score", () => {
+    const s = A.abregeManche({ manche: "5th", moitie: "Top", ext: 3, dom: 2 });
+    assert.match(s, /5e/);
+    assert.doesNotMatch(s, /[0-9]+\s*[–-]\s*[0-9]+/, "l'abrege ne doit contenir aucun score");
+  });
+  test("distingue le haut du bas de manche", () => {
+    assert.notEqual(
+      A.abregeManche({ manche: "7th", moitie: "Top" }),
+      A.abregeManche({ manche: "7th", moitie: "Bottom" })
+    );
+  });
+  test("tolère une réponse incomplète", () => {
+    assert.equal(A.abregeManche(null), "en cours");
+    assert.equal(A.abregeManche({}), "en cours");
+  });
+});

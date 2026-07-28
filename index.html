@@ -2,8 +2,24 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>L'almanach du carnet de marque</title>
+    <meta name="description" content="Une notion de baseball par nuit, tirée du vrai déroulé des matchs, et le calendrier MLB remis à l'heure de Paris." />
+
+    <!-- Chemins relatifs : indispensable sous GitHub Pages, ou le site est
+         servi depuis /<depot>/ et non depuis la racine du domaine. -->
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="icon" type="image/png" sizes="192x192" href="./icone-192.png" />
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
+
+    <meta name="theme-color" content="#123D2A" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- iOS ignore encore le manifeste pour le plein ecran : il lui faut ses
+         propres balises. « black-translucent » laisse le fond vert remonter
+         sous la barre d'etat. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Almanach" />
   </head>
   <body style="margin:0;background:#123D2A">
     <div id="root"></div>

@@ -631,6 +631,40 @@ function texteAvecKInverse(txt) {
   ));
 }
 
+/* ------------------------------------------------------------------ *
+ *  LE QUIZ
+ *  Le carnet expose aux notions sans jamais verifier qu'elles restent,
+ *  et devient un musee une fois les 32 cochees. Les questions sont
+ *  tirees d'actions reellement survenues, pas d'exemples fabriques.
+ *  Les distracteurs partagent la forme de la bonne reponse — meme
+ *  nombre de segments traces sur le losange — pour que le choix demande
+ *  une vraie discrimination et pas une elimination grossiere.
+ * ------------------------------------------------------------------ */
+function melanger(liste, alea = Math.random) {
+  const l = liste.slice();
+  for (let i = l.length - 1; i > 0; i--) {
+    const j = Math.floor(alea() * (i + 1));
+    [l[i], l[j]] = [l[j], l[i]];
+  }
+  return l;
+}
+
+function fabriquerQuestion(sightings, dejaVues = [], alea = Math.random) {
+  const frais = sightings.filter((s) => !dejaVues.includes(s.conceptId));
+  const vivier = frais.length ? frais : sightings;
+  if (!vivier.length) return null;
+
+  const tire = vivier[Math.floor(alea() * vivier.length)];
+  const bon = BY_ID[tire.conceptId];
+  if (!bon) return null;
+
+  const memeForme = CONCEPTS.filter((c) => c.id !== bon.id && c.legs.length === bon.legs.length);
+  const reste = CONCEPTS.filter((c) => c.id !== bon.id && c.legs.length !== bon.legs.length);
+  const distracteurs = [...melanger(memeForme, alea), ...melanger(reste, alea)].slice(0, 3);
+
+  return { action: tire, bon, options: melanger([bon, ...distracteurs], alea) };
+}
+
 /* ================================================================== *
  *  VUE « LE CARNET »
  * ================================================================== */
@@ -644,6 +678,11 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
   const [justInked, setJustInked] = useState(null);
   const [ouvertCarnet, setOuvertCarnet] = useState(false);
   const [consulte, setConsulte] = useState(null); // conceptId ouvert depuis le carnet
+  const [mode, setMode] = useState("decouvrir"); // decouvrir | reviser
+  const [question, setQuestion] = useState(null);
+  const [choix, setChoix] = useState(null);
+  const [seance, setSeance] = useState({ bon: 0, total: 0 });
+  const [posees, setPosees] = useState([]);
   const articleRef = useRef(null);
 
   const charger = useCallback(async (tid) => {
@@ -729,6 +768,26 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
     articleRef.current.scrollIntoView({ behavior: doux ? "smooth" : "auto", block: "start" });
   }, [consulte]);
 
+  const suivante = useCallback(
+    (histoire = posees) => {
+      setChoix(null);
+      setQuestion(fabriquerQuestion(sightings, histoire));
+    },
+    [sightings, posees]
+  );
+
+  useEffect(() => {
+    if (mode === "reviser" && !question && sightings.length) suivante([]);
+  }, [mode, question, sightings, suivante]);
+
+  const repondre = (c) => {
+    if (choix) return; // une seule reponse par question
+    setChoix(c);
+    const juste = c.id === question.bon.id;
+    setSeance((s) => ({ bon: s.bon + (juste ? 1 : 0), total: s.total + 1 }));
+    setPosees((p) => [...p, question.bon.id]);
+  };
+
   const noter = async () => {
     if (!courant || dejaVu || !ancre) return;
     const s = [...appris, courant.conceptId];
@@ -742,6 +801,31 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
 
   return (
     <div className="alm-rise">
+      {/* ---------- decouvrir ou reviser ---------- */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[["decouvrir", "Découvrir"], ["reviser", "Réviser"]].map(([id, lib]) => (
+          <button
+            key={id}
+            className="alm-btn"
+            onClick={() => setMode(id)}
+            aria-pressed={mode === id}
+            style={btnStyle(mode === id)}
+          >
+            {lib}
+          </button>
+        ))}
+        {mode === "reviser" && seance.total > 0 && (
+          <span
+            style={{
+              fontFamily: FF_MONO, fontSize: 11, color: T.dim,
+              alignSelf: "center", marginLeft: "auto",
+            }}
+          >
+            {seance.bon} / {seance.total} cette séance
+          </span>
+        )}
+      </div>
+
       {/* ---------- quelle equipe on etudie ---------- */}
       <div style={{ margin: "0 0 22px", display: "flex", alignItems: "center", gap: 10 }}>
         <label
@@ -810,7 +894,108 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
         </p>
       )}
 
-      {phase === "ok" && courant && concept && (
+      {phase === "ok" && mode === "reviser" && question && (
+        <div className="alm-rise" key={question.action.conceptId + posees.length}>
+          <div
+            style={{
+              fontFamily: FF_MONO, fontSize: 11, color: T.dim, marginBottom: 12,
+            }}
+          >
+            {ordinal(question.action.manche)} MANCHE ·{" "}
+            {question.action.demi === "top" ? "HAUT" : "BAS"}
+            {game ? ` · ${game.teams.away.team.abbreviation} @ ${game.teams.home.team.abbreviation}` : ""}
+          </div>
+
+          {/* L'action, sans le losange ni le code : ils donneraient la reponse. */}
+          <div
+            style={{
+              background: "rgba(11,36,26,.78)", border: "1px solid rgba(239,243,234,.2)",
+              borderRadius: 3, padding: 20, fontSize: 16, lineHeight: 1.5,
+            }}
+          >
+            {question.action.description}
+          </div>
+
+          <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, margin: "16px 0 10px", letterSpacing: ".1em" }}>
+            QUELLE NOTION EST-CE ?
+          </p>
+
+          <div style={{ display: "grid", gap: 8 }}>
+            {question.options.map((o) => {
+              const juste = o.id === question.bon.id;
+              const pris = choix?.id === o.id;
+              const fond = !choix
+                ? "rgba(11,36,26,.5)"
+                : juste
+                ? "rgba(242,206,107,.18)"
+                : pris
+                ? "rgba(194,96,58,.22)"
+                : "rgba(11,36,26,.3)";
+              return (
+                <button
+                  key={o.id}
+                  className="alm-cell"
+                  onClick={() => repondre(o)}
+                  disabled={!!choix}
+                  style={{
+                    all: "unset", cursor: choix ? "default" : "pointer", display: "block",
+                    boxSizing: "border-box", padding: "11px 14px", borderRadius: 2,
+                    background: fond,
+                    border: `1px solid ${choix && juste ? T.sodium : choix && pris ? T.clay : "rgba(239,243,234,.2)"}`,
+                    opacity: choix && !juste && !pris ? 0.45 : 1,
+                    fontSize: 15,
+                  }}
+                >
+                  {choix && juste ? "✓ " : choix && pris ? "✗ " : ""}
+                  {o.titre}
+                </button>
+              );
+            })}
+          </div>
+
+          {choix && (
+            <div className="alm-rise" style={{ marginTop: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+                <Losange concept={question.bon} size={72} animate />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      fontFamily: FF_MONO, fontWeight: 700, fontSize: 22,
+                      color: T.clay, letterSpacing: ".04em",
+                    }}
+                  >
+                    {question.bon.code}
+                  </div>
+                  <p style={{ margin: "4px 0 0", fontSize: 15.5, lineHeight: 1.45 }}>
+                    {question.bon.retenir}
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 18 }}>
+                <button className="alm-btn" onClick={() => suivante()} style={btnStyle(true)}>
+                  Question suivante
+                </button>
+                <button
+                  className="alm-btn"
+                  onClick={() => { setMode("decouvrir"); setConsulte(question.bon.id); }}
+                  style={btnStyle(false)}
+                >
+                  Relire la fiche
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {phase === "ok" && mode === "reviser" && !question && (
+        <p style={{ fontSize: 16 }}>
+          Ce match ne contient aucune action exploitable pour une question. Choisis une autre équipe.
+        </p>
+      )}
+
+      {phase === "ok" && mode === "decouvrir" && courant && concept && (
         <article ref={articleRef} key={courant.conceptId} className="alm-rise">
           <div
             style={{
@@ -1001,7 +1186,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
         </article>
       )}
 
-      {phase === "ok" && !courant && (
+      {phase === "ok" && mode === "decouvrir" && !courant && (
         <p style={{ fontSize: 16 }}>
           Ce match ne contenait aucune action reconnue par l'almanach. Ça arrive : essaie une autre équipe.
         </p>
@@ -1487,7 +1672,7 @@ function anecdote(m, stades, stadeHabituel) {
 
 /* Panneau de detail : remplace l'infobulle, inutilisable au toucher.
    Il s'ouvre sous la nuit concernee pour rester dans son contexte. */
-function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer }) {
+function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif }) {
   const eqE = parId[m.idExt], eqD = parId[m.idDom];
   const s = stades[m.idStade];
   const fini = m.etat === "Final";
@@ -1540,6 +1725,13 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer }) {
         )}
         {ligne("suspense", note != null ? `${note}/10 — sans révéler le vainqueur` : null)}
         {ligne("score", fini && spoilers ? `${m.scoreExt} – ${m.scoreDom}` : null)}
+        {ligne(
+          "en direct",
+          vif
+            ? `${abregeManche(vif)} · ${vif.retraits ?? 0} retrait${(vif.retraits ?? 0) > 1 ? "s" : ""}` +
+              (spoilers ? ` · ${vif.ext} – ${vif.dom}` : " · score masqué")
+            : null
+        )}
         {ligne(
           "état",
           m.reporte
@@ -1613,13 +1805,27 @@ function compteARebours(debut, maintenant = Date.now()) {
 const GRADUATIONS = [18, 21, 24, 27, 30];
 const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
 
-function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert }) {
+/* « 5e ▲ » : manche en cours et moitie. Sans le score, ce n'est pas un
+   spoiler — ca dit seulement que le match est en train de se jouer. */
+function abregeManche(v) {
+  if (!v?.manche) return "en cours";
+  const fleche = /^Top|^Middle/.test(v.moitie || "") ? "▲" : "▼";
+  return `${v.manche.replace(/(st|nd|rd|th)$/, "")}e ${fleche}`;
+}
+
+function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert, vif }) {
   const fini = m.etat === "Final";
   const live = m.etat === "Live";
   const p = m.coteDom;
   // Une ligne d'appoint n'apparait que s'il y a quelque chose a dire.
   const appoint =
-    note != null
+    // Le direct passe devant tout le reste : c'est la seule information
+    // perissable de l'ecran.
+    live && vif
+      ? spoilers
+        ? `${vif.ext}–${vif.dom} · ${abregeManche(vif)}`
+        : abregeManche(vif)
+      : note != null
       ? `${note}/10`
       : fini && spoilers
       ? `${m.scoreExt}–${m.scoreDom}`
@@ -1720,12 +1926,6 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   });
   const largeur = Math.min(0.35, Math.max(0.05, PASTILLE_PX / pisteW));
   // Une ligne d'appoint (score ou note) fait grandir les pastilles.
-  const ligneAppoint = spoilers || Object.keys(suspense).length > 0;
-  // Sur piste etroite on grossit les voies : une pastille de 18 px est
-  // intouchable au doigt, la recommandation courante etant de 44.
-  const etroit = pisteW < 420;
-  const base = etroit ? VOIE_PX + 8 : VOIE_PX;
-  const hauteurVoie = ligneAppoint ? base + 12 : base;
 
   const nuits = useMemo(
     () => Array.from({ length: NB_NUITS }, (_, i) => decalerJour(ancre, i)),
@@ -1859,6 +2059,62 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     const id = setInterval(() => setInstant(Date.now()), 60000);
     return () => clearInterval(id);
   }, []);
+
+  /* LE DIRECT
+     Hydrater linescore sur toute la fenetre couterait 76 Ko pour une donnee
+     qui ne concerne au plus qu'une quinzaine de matchs, et seulement pendant
+     qu'ils se jouent. On interroge donc la seule journee en cours, avec un
+     filtre de champs : 2 Ko. Le rafraichissement ne tourne que tant qu'un
+     match est effectivement en cours. */
+  const [direct, setDirect] = useState({});
+  const yaDuDirect = useMemo(
+    () => [...parNuit.values()].flat().some((m) => m.etat === "Live"),
+    [parNuit]
+  );
+  useEffect(() => {
+    if (!yaDuDirect) return;
+    let annule = false;
+    const tirer = () => {
+      const jour = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
+      fetch(
+        `${API}/schedule?sportId=1&date=${jour}&hydrate=linescore` +
+          `&fields=dates,games,gamePk,status,abstractGameState,linescore,` +
+          `currentInningOrdinal,inningState,outs,teams,home,away,runs`
+      )
+        .then((r) => r.json())
+        .then((d) => {
+          if (annule) return;
+          const m = {};
+          for (const jr of d.dates || [])
+            for (const g of jr.games || []) {
+              const l = g.linescore;
+              if (!l || g.status?.abstractGameState !== "Live") continue;
+              m[g.gamePk] = {
+                manche: l.currentInningOrdinal,
+                moitie: l.inningState,          // Top / Bottom / Middle / End
+                retraits: l.outs,
+                ext: l.teams?.away?.runs,
+                dom: l.teams?.home?.runs,
+              };
+            }
+          setDirect(m);
+        })
+        .catch(() => {});
+    };
+    tirer();
+    const id = setInterval(tirer, 60000);
+    return () => {
+      annule = true;
+      clearInterval(id);
+    };
+  }, [yaDuDirect]);
+
+  const ligneAppoint = spoilers || Object.keys(suspense).length > 0 || yaDuDirect;
+  // Sur piste etroite on grossit les voies : une pastille de 18 px est
+  // intouchable au doigt, la recommandation courante etant de 44.
+  const etroit = pisteW < 420;
+  const base = etroit ? VOIE_PX + 8 : VOIE_PX;
+  const hauteurVoie = ligneAppoint ? base + 12 : base;
 
   const matchDuJour = useMemo(
     () => choisirMatchDuJour([...parNuit.values()].flat(), bilans, instant),
@@ -2464,6 +2720,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                       largeur={largeur}
                       hauteur={hauteurVoie}
                       note={suspense[m.id] != null ? noteSuspense(suspense[m.id]) : null}
+                      vif={direct[m.id]}
                       ouvert={choisi === m.id}
                       onOuvrir={(id) => setChoisi((c) => (c === id ? null : id))}
                     />
@@ -2488,6 +2745,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                   lanceurs={lanceurs}
                   note={suspense[matchOuvert.id] != null ? noteSuspense(suspense[matchOuvert.id]) : null}
                   spoilers={spoilers}
+                  vif={direct[matchOuvert.id]}
                   onFermer={() => setChoisi(null)}
                 />
               )}
@@ -2852,13 +3110,13 @@ function btnStyle(primaire) {
  *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
  * --------------------------------------------------------------------- */
 export {
-  ongletDepuisFragment, choisirMatchDuJour, compteARebours,
+  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
   // vue « le carnet »
-  VueAlmanach, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
+  VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,
 };

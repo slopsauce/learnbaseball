@@ -1,0 +1,35 @@
+{
+  "name": "L'almanach du carnet de marque",
+  "short_name": "Almanach",
+  "description": "Une notion de baseball par nuit, tirée du vrai déroulé des matchs, et le calendrier MLB remis à l'heure de Paris.",
+  "lang": "fr",
+  "dir": "ltr",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#123D2A",
+  "theme_color": "#123D2A",
+  "categories": ["sports", "education"],
+  "icons": [
+    { "src": "./icone-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./icone-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./icone-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    {
+      "name": "Le programme",
+      "short_name": "Programme",
+      "description": "Le calendrier des nuits, heure de Paris",
+      "url": "./#programme",
+      "icons": [{ "src": "./icone-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Le carnet",
+      "short_name": "Carnet",
+      "description": "La notion du jour",
+      "url": "./#carnet",
+      "icons": [{ "src": "./icone-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
