@@ -547,3 +547,41 @@ describe("le direct", () => {
     assert.equal(A.abregeManche({}), "en cours");
   });
 });
+
+describe("doublons de matchs reportés", () => {
+  /* Regression : un match reporte conserve son gamePk et figure sous DEUX
+     dates — l'originale marquee Postponed et celle du rattrapage. Cliquer la
+     pastille du rattrapage ouvrait la fiche du fantome, parce que la recherche
+     se faisait par gamePk et renvoyait la premiere occurrence. */
+  const fantome = { id: 824490, cle: "824490@2026-07-27", nuit: "2026-07-27", reporte: true, hhmm: "01:10" };
+  const vrai = { id: 824490, cle: "824490@2026-07-28", nuit: "2026-07-28", reporte: false, hhmm: "19:40" };
+  const autre = { id: 824489, cle: "824489@2026-07-28", nuit: "2026-07-28", reporte: false, hhmm: "01:10" };
+
+  test("écarte le fantôme quand le rattrapage est programmé", () => {
+    const r = A.purgerReports([fantome, vrai, autre]);
+    assert.equal(r.length, 2);
+    assert.ok(!r.some((m) => m.reporte), "le report doublonne doit disparaitre");
+    assert.ok(r.some((m) => m.cle === vrai.cle), "le match rattrape doit rester");
+  });
+
+  test("conserve le report tant qu'aucun rattrapage n'est fixé", () => {
+    const r = A.purgerReports([fantome, autre]);
+    assert.equal(r.length, 2);
+    assert.ok(r.some((m) => m.reporte), "sans rattrapage, « reporté » explique la soiree vide");
+  });
+
+  test("ne touche à rien quand il n'y a pas de doublon", () => {
+    const l = [vrai, autre];
+    assert.deepEqual(A.purgerReports(l), l);
+  });
+
+  test("les clés restent uniques après purge", () => {
+    const r = A.purgerReports([fantome, vrai, autre]);
+    assert.equal(new Set(r.map((m) => m.cle)).size, r.length);
+  });
+
+  test("une clé identifie une occurrence, pas un match", () => {
+    assert.notEqual(fantome.cle, vrai.cle, "meme gamePk, nuits differentes");
+    assert.equal(fantome.id, vrai.id);
+  });
+});

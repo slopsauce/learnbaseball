@@ -1802,6 +1802,24 @@ function compteARebours(debut, maintenant = Date.now()) {
   return j <= 1 ? "demain" : `dans ${j} jours`;
 }
 
+/* Un match reporte dont le rattrapage est deja programme apparait deux fois
+   sous le meme gamePk. On ne garde alors que celui qui sera reellement joue.
+   S'il n'a pas encore de date de rattrapage, on conserve la mention
+   « reporte » : elle explique pourquoi la soiree etait vide. */
+function purgerReports(liste) {
+  const parPk = new Map();
+  for (const m of liste) {
+    if (!parPk.has(m.id)) parPk.set(m.id, []);
+    parPk.get(m.id).push(m);
+  }
+  const garder = new Set();
+  for (const groupe of parPk.values()) {
+    const joues = groupe.filter((m) => !m.reporte);
+    for (const m of (joues.length ? joues : groupe.slice(0, 1))) garder.add(m.cle);
+  }
+  return liste.filter((m) => garder.has(m.cle));
+}
+
 const GRADUATIONS = [18, 21, 24, 27, 30];
 const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
 
@@ -1835,7 +1853,7 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert
     <button
       className="alm-pill"
       title={m.infobulle}
-      onClick={() => onOuvrir(m.id)}
+      onClick={() => onOuvrir(m.cle)}
       aria-label={`Détails : ${m.ext} contre ${m.dom} à ${m.hhmm}`}
       aria-expanded={ouvert}
       style={{
@@ -1953,6 +1971,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             const brut = (h - DEBUT) / (FIN - DEBUT);
             out.push({
               id: g.gamePk,
+              // Un report conserve son gamePk et figure sous DEUX dates :
+              // l'originale marquee Postponed et celle du rattrapage. Le
+              // gamePk ne suffit donc pas a designer une occurrence.
+              cle: `${g.gamePk}@${nuit}`,
               debut: g.gameDate,   // instant UTC, pour le compte a rebours
               nuit,
               h,
@@ -1992,7 +2014,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             });
           }
         }
-        setMatchs(out);
+        setMatchs(purgerReports(out));
         setPhase("ok");
       })
       .catch((e) => {
@@ -2129,7 +2151,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         .map((m) => ({ m, s: indiceEnvie(m, bilans) }))
         .filter((x) => x.s > 0)
         // Deja mis en avant juste au-dessus : inutile de le redire.
-        .filter((x) => x.m.id !== matchDuJour?.id)
+        .filter((x) => x.m.cle !== matchDuJour?.cle)
         .sort((a, b) => b.s - a.s)
         // Une meme affiche revient plusieurs fois dans une serie : on ne
         // garde que sa meilleure occurrence, pour varier le panneau.
@@ -2146,7 +2168,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   );
 
   const matchOuvert = useMemo(
-    () => (choisi == null ? null : [...parNuit.values()].flat().find((m) => m.id === choisi) || null),
+    () => (choisi == null ? null : [...parNuit.values()].flat().find((m) => m.cle === choisi) || null),
     [choisi, parNuit]
   );
 
@@ -2703,7 +2725,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                   />
                   {liste.map((m) => (
                     <Pastille
-                      key={m.id}
+                      key={m.cle}
                       m={{
                         ...m,
                         infobulle:
@@ -2721,8 +2743,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                       hauteur={hauteurVoie}
                       note={suspense[m.id] != null ? noteSuspense(suspense[m.id]) : null}
                       vif={direct[m.id]}
-                      ouvert={choisi === m.id}
-                      onOuvrir={(id) => setChoisi((c) => (c === id ? null : id))}
+                      ouvert={choisi === m.cle}
+                      onOuvrir={(cle) => setChoisi((c) => (c === cle ? null : cle))}
                     />
                   ))}
                   {!liste.length && (
@@ -3110,7 +3132,7 @@ function btnStyle(primaire) {
  *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
  * --------------------------------------------------------------------- */
 export {
-  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche,
+  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche, purgerReports,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
