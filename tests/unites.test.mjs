@@ -394,3 +394,22 @@ describe("helpers d'affichage", () => {
     assert.equal(A.distanceKm(null, la), null);
   });
 });
+
+describe("adressage par fragment d'URL", () => {
+  test("les alias du programme mènent tous à la bonne vue", () => {
+    for (const h of ["#programme", "#nuits", "#calendrier", "programme", "#/programme", "#PROGRAMME", "#Programme"])
+      assert.equal(A.ongletDepuisFragment(h), "nuits", `alias non reconnu : ${h}`);
+  });
+  test("les alias du carnet aussi", () => {
+    for (const h of ["#carnet", "#almanach", "#notions", "#/carnet"])
+      assert.equal(A.ongletDepuisFragment(h), "carnet", `alias non reconnu : ${h}`);
+  });
+  test("un fragment absent ou farfelu retombe sur le carnet", () => {
+    for (const h of ["", "#", null, undefined, "#nawak", "#../../etc/passwd", "#<script>"])
+      assert.equal(A.ongletDepuisFragment(h), "carnet", `repli manquant pour ${JSON.stringify(h)}`);
+  });
+  test("ne renvoie jamais autre chose qu'un onglet connu", () => {
+    for (const h of ["#a", "#programme", "#carnet", "#123", "#%20"])
+      assert.ok(["carnet", "nuits"].includes(A.ongletDepuisFragment(h)));
+  });
+});

@@ -2416,8 +2416,49 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 /* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
+/* ------------------------------------------------------------------ *
+ *  ADRESSAGE PAR FRAGMENT
+ *  Sur GitHub Pages il n'y a aucun serveur pour reecrire les chemins :
+ *  « /programme » renverrait un 404. Le fragment (#programme) reste
+ *  cote navigateur et fonctionne partout, y compris hors ligne.
+ *  Plusieurs alias sont acceptes pour qu'un lien tape a la main tombe juste.
+ * ------------------------------------------------------------------ */
+const ALIAS = {
+  programme: "nuits", nuits: "nuits", calendrier: "nuits",
+  carnet: "carnet", almanach: "carnet", notions: "carnet",
+};
+const FRAGMENT = { nuits: "programme", carnet: "carnet" };
+
+function ongletDepuisFragment(brut) {
+  const h = String(brut || "").replace(/^#\/?/, "").trim().toLowerCase();
+  return ALIAS[h] || "carnet";
+}
+
 export default function App() {
-  const [onglet, setOnglet] = useState("carnet"); // carnet | nuits
+  // Lu une seule fois a l'initialisation : un lien partage ouvre directement
+  // la bonne vue. En rendu serveur, `location` n'existe pas.
+  const [onglet, setOnglet] = useState(() =>
+    typeof window === "undefined" ? "carnet" : ongletDepuisFragment(window.location.hash)
+  );
+
+  // Boutons precedent/suivant du navigateur.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const maj = () => setOnglet(ongletDepuisFragment(window.location.hash));
+    window.addEventListener("hashchange", maj);
+    return () => window.removeEventListener("hashchange", maj);
+  }, []);
+
+  const changerOnglet = (id) => {
+    setOnglet(id);
+    // Affecter location.hash cree une entree d'historique : le bouton
+    // « precedent » revient donc a l'onglet d'avant, comme on l'attend.
+    try {
+      if (typeof window !== "undefined") window.location.hash = FRAGMENT[id] || id;
+    } catch {
+      /* contexte restreint : l'onglet change quand meme */
+    }
+  };
   const [teams, setTeams] = useState([]);
   const [appris, setAppris] = useState([]);
   const [suivies, setSuivies] = useState([119]);
@@ -2560,7 +2601,7 @@ export default function App() {
   const Onglet = ({ id, children }) => (
     <button
       className="alm-tab"
-      onClick={() => setOnglet(id)}
+      onClick={() => changerOnglet(id)}
       aria-current={onglet === id ? "page" : undefined}
       style={{
         all: "unset", cursor: "pointer",
@@ -2687,6 +2728,7 @@ function btnStyle(primaire) {
  *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
  * --------------------------------------------------------------------- */
 export {
+  ongletDepuisFragment,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
