@@ -657,24 +657,39 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
           `&endDate=${fin.toISOString().slice(0, 10)}`
       ).then((r) => r.json());
 
+      // Un match reporte porte abstractGameState "Final" alors qu'il n'a jamais
+      // ete joue : allPlays est vide et winProbability repond 404. Environ 3 %
+      // des matchs. On se fie donc a codedGameState, qui vaut "F" pour un vrai
+      // match termine et "D" pour un report.
       const finis = (sch.dates || [])
         .flatMap((d) => d.games || [])
-        .filter((g) => g.status?.abstractGameState === "Final")
+        .filter((g) => g.status?.codedGameState === "F")
         .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate));
 
       if (!finis.length) {
         setPhase("vide");
         return;
       }
-      const g = finis[0];
 
-      // Les clips sont un bonus : leur absence ne doit pas casser la fiche.
-      const [pbp, content] = await Promise.all([
-        fetch(`${API}/game/${g.gamePk}/playByPlay`).then((r) => r.json()),
-        fetch(`${API}/game/${g.gamePk}/content`).then((r) => r.json()).catch(() => null),
-      ]);
-
-      const vues = detectSightings(pbp.allPlays || [], indexerClips(content));
+      // Filet de securite : si la feuille du dernier match est vide malgre
+      // tout, on remonte au precedent plutot que d'afficher une page morte.
+      let g = null, vues = [];
+      for (const candidat of finis.slice(0, 3)) {
+        const [pbp, content] = await Promise.all([
+          fetch(`${API}/game/${candidat.gamePk}/playByPlay`).then((r) => r.json()),
+          fetch(`${API}/game/${candidat.gamePk}/content`).then((r) => r.json()).catch(() => null),
+        ]);
+        const trouve = detectSightings(pbp.allPlays || [], indexerClips(content));
+        if (trouve.length) {
+          g = candidat;
+          vues = trouve;
+          break;
+        }
+      }
+      if (!g) {
+        setPhase("vide");
+        return;
+      }
       vues.sort((a, b) => BY_ID[b.conceptId].rarete - BY_ID[a.conceptId].rarete);
 
       setGame(g);
@@ -1525,7 +1540,16 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer }) {
         )}
         {ligne("suspense", note != null ? `${note}/10 — sans révéler le vainqueur` : null)}
         {ligne("score", fini && spoilers ? `${m.scoreExt} – ${m.scoreDom}` : null)}
-        {ligne("état", fini && !spoilers ? "terminé — score masqué" : m.etat === "Live" ? "en cours" : null)}
+        {ligne(
+          "état",
+          m.reporte
+            ? "reporté — il n'a pas été joué"
+            : fini && !spoilers
+            ? "terminé — score masqué"
+            : m.etat === "Live"
+            ? "en cours"
+            : null
+        )}
       </div>
 
       {m.idLanceurExt && m.idLanceurDom && (
@@ -1706,6 +1730,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
               scoreExt: g.teams.away.score,
               scoreDom: g.teams.home.score,
               etat: g.status?.abstractGameState,
+              // "F" = vraiment joue, "D" = reporte (pluie le plus souvent).
+              reporte: g.status?.codedGameState === "D",
               stade: g.venue?.name || "",
               idStade: g.venue?.id,
               typeMatch: g.gameType,
@@ -1804,12 +1830,17 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           (x, i, tout) =>
             tout.findIndex((y) => y.m.idExt === x.m.idExt && y.m.idDom === x.m.idDom) === i
         )
-        .slice(0, 3)
+        .slice(0, 5)
         .map((x) => x.m)
         // Selection sur l'interet, affichage dans l'ordre chronologique :
         // le panneau se lit comme un agenda, pas comme un classement.
         .sort((a, b) => (a.nuit === b.nuit ? a.h - b.h : a.nuit < b.nuit ? -1 : 1)),
     [parNuit, bilans]
+  );
+
+  const matchOuvert = useMemo(
+    () => (choisi == null ? null : [...parNuit.values()].flat().find((m) => m.id === choisi) || null),
+    [choisi, parNuit]
   );
 
   /* Statistiques des seuls lanceurs affiches sur les trois cartes : au plus
@@ -1850,11 +1881,6 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     };
   }, [idsLanceurs]);
 
-  const matchOuvert = useMemo(
-    () => (choisi == null ? null : [...parNuit.values()].flat().find((m) => m.id === choisi) || null),
-    [choisi, parNuit]
-  );
-
   const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
 
@@ -1875,7 +1901,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const jauger = async () => {
     const cibles = [...parNuit.values()]
       .flat()
-      .filter((m) => m.etat === "Final" && suspense[m.id] == null)
+      .filter((m) => m.etat === "Final" && !m.reporte && suspense[m.id] == null)
       .map((m) => m.id);
     if (!cibles.length) return;
     const lot = cibles.slice(0, 45); // garde-fou : ~430 Ko maximum
@@ -2655,3 +2681,18 @@ function btnStyle(primaire) {
     fontWeight: 700,
   };
 }
+
+/* --------------------------------------------------------------------- *
+ *  Exports destines aux tests. Ils n'alourdissent pas le bundle : Rollup
+ *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
+ * --------------------------------------------------------------------- */
+export {
+  // vue « le programme »
+  VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
+  coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
+  libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
+  DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
+  // vue « le carnet »
+  VueAlmanach, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
+  texteAvecKInverse, ordinal, dateFR,
+};

@@ -3,24 +3,40 @@ name: deploy
 on:
   push: { branches: [main] }
   workflow_dispatch:
+  # Surveillance quotidienne du contrat avec l'API de MLB : elle n'est ni
+  # documentee ni garantie, et peut changer sans qu'on pousse quoi que ce soit.
+  # 06h00 UTC, soit 08h00 a Paris en ete. GitHub peut retarder l'execution en
+  # periode de charge, et desactive les taches planifiees apres 60 jours sans
+  # activite sur le depot.
+  # schedule:
+  #   - cron: "0 6 * * *"
 
 permissions: { contents: read, pages: write, id-token: write }
 concurrency: { group: pages, cancel-in-progress: true }
 
 jobs:
   build:
+    # Inutile de reconstruire lors du passage planifie : seul le contrat
+    # d'API nous interesse alors.
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm }
       - run: npm ci
+
+      # Bloque le deploiement si un test echoue. `npm run build` seul laisserait
+      # passer une page blanche : empaqueter n'est pas executer.
+      - run: npm test
+
       - run: npm run build
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with: { path: dist }
 
   deploy:
+    if: github.event_name != 'schedule'
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -29,3 +45,16 @@ jobs:
     steps:
       - id: d
         uses: actions/deploy-pages@v5
+
+  # Ce job a le droit d'echouer bruyamment : `deploy` depend de `build`, pas de
+  # lui, donc une rupture d'API ne bloque aucune mise en ligne. En revanche son
+  # echec marque le run en rouge et declenche une notification — ce que
+  # `continue-on-error` aurait justement supprime.
+  contrat-api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: 22, cache: npm }
+      - run: npm ci
+      - run: npm run test:api
