@@ -1346,21 +1346,52 @@ function Lanceur({ id, nom, st }) {
   );
 }
 
-/* Petite etiquette narrative. */
+/* Glose : un terme explicable au clic. Le survol ne suffit pas — il n'existe
+   pas au toucher. L'explication sort en pleine largeur grace a flexBasis:100%,
+   ce qui force un retour a la ligne dans les conteneurs flex-wrap qui
+   l'accueillent (la ligne de situation et la rangee d'etiquettes). */
+function Glose({ texte, children, style }) {
+  const [ouvert, setOuvert] = useState(false);
+  return (
+    <>
+      <button
+        onClick={() => setOuvert(!ouvert)}
+        aria-expanded={ouvert}
+        title={texte}
+        style={{ all: "unset", cursor: "help", ...style }}
+      >
+        {children}
+      </button>
+      {ouvert && (
+        <span
+          style={{
+            flexBasis: "100%", fontFamily: FF_BODY, fontSize: 12.5,
+            color: T.chalk, lineHeight: 1.45, marginTop: 5,
+            borderLeft: `2px solid ${T.clay}`, paddingLeft: 9,
+          }}
+        >
+          {texte}
+        </span>
+      )}
+    </>
+  );
+}
+
+/* Petite etiquette narrative, explicable au clic. */
 function Etiquette({ children, titre, fort = false }) {
   return (
-    <span
-      title={titre}
+    <Glose
+      texte={titre}
       style={{
         fontFamily: FF_MONO, fontSize: 8.5, letterSpacing: ".1em",
-        padding: "2px 6px", borderRadius: 2, cursor: titre ? "help" : "default",
+        padding: "2px 6px", borderRadius: 2, display: "inline-block",
         color: fort ? T.sodium : T.dim,
         border: `1px solid ${fort ? "rgba(242,206,107,.55)" : "rgba(239,243,234,.22)"}`,
         background: fort ? "rgba(242,206,107,.1)" : "transparent",
       }}
     >
       {children}
-    </span>
+    </Glose>
   );
 }
 
@@ -1439,10 +1470,91 @@ function anecdote(m, stades, stadeHabituel) {
   return cand[m.id % Math.min(cand.length, 2)];
 }
 
+/* Panneau de detail : remplace l'infobulle, inutilisable au toucher.
+   Il s'ouvre sous la nuit concernee pour rester dans son contexte. */
+function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer }) {
+  const eqE = parId[m.idExt], eqD = parId[m.idDom];
+  const s = stades[m.idStade];
+  const fini = m.etat === "Final";
+  const ligne = (k, v) =>
+    v ? (
+      <div style={{ display: "flex", gap: 8, fontSize: 11.5, flexWrap: "wrap" }}>
+        <span style={{ color: T.dim, minWidth: 74, flexShrink: 0 }}>{k}</span>
+        <span style={{ color: T.chalk, minWidth: 0 }}>{v}</span>
+      </div>
+    ) : null;
+
+  return (
+    <div
+      className="alm-rise"
+      style={{
+        background: "rgba(11,36,26,.9)", border: `1px solid ${T.clay}`,
+        borderRadius: 3, padding: "12px 14px", margin: "2px 0 10px 74px",
+        fontFamily: FF_MONO,
+      }}
+      className="alm-detail"
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <Img src={CAP(m.idExt)} alt="" size={24} />
+        <span style={{ fontSize: 12.5, color: T.chalk }}>{eqE?.name || m.ext}</span>
+        <span style={{ color: T.dim }}>@</span>
+        <Img src={CAP(m.idDom)} alt="" size={24} />
+        <span style={{ fontSize: 12.5, color: T.chalk }}>{eqD?.name || m.dom}</span>
+        <button
+          onClick={onFermer}
+          aria-label="Fermer"
+          style={{
+            all: "unset", cursor: "pointer", marginLeft: "auto",
+            color: T.dim, fontSize: 15, padding: "0 4px",
+          }}
+        >
+          ×
+        </button>
+      </div>
+
+      <div style={{ display: "grid", gap: 3 }}>
+        {ligne("heure", `${m.hhmm} à Paris`)}
+        {ligne("stade", m.stade + (s?.ville ? ` · ${s.ville}` : "") + (m.neutre ? "  ◆ terrain neutre" : ""))}
+        {ligne("série", m.matchSerie && m.totalSerie ? `match ${m.matchSerie} sur ${m.totalSerie}` : null)}
+        {ligne("division", m.derby ? "derby : les deux équipes du même groupe" : null)}
+        {ligne(
+          "cote",
+          m.coteDom != null && !fini
+            ? `${Math.round(m.coteDom * 100)} % pour ${m.dom}, qui reçoit`
+            : null
+        )}
+        {ligne("suspense", note != null ? `${note}/10 — sans révéler le vainqueur` : null)}
+        {ligne("score", fini && spoilers ? `${m.scoreExt} – ${m.scoreDom}` : null)}
+        {ligne("état", fini && !spoilers ? "terminé — score masqué" : m.etat === "Live" ? "en cours" : null)}
+      </div>
+
+      {m.idLanceurExt && m.idLanceurDom && (
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 11 }}>
+          <Lanceur id={m.idLanceurExt} nom={m.lanceurExt} st={lanceurs[m.idLanceurExt]} />
+          <span style={{ color: T.clay, fontSize: 12, alignSelf: "center" }}>×</span>
+          <Lanceur id={m.idLanceurDom} nom={m.lanceurDom} st={lanceurs[m.idLanceurDom]} />
+        </div>
+      )}
+
+      {(lanceurs[m.idLanceurExt] || lanceurs[m.idLanceurDom]) && (
+        <p
+          style={{
+            fontFamily: FF_BODY, fontSize: 12, color: T.dim,
+            margin: "9px 0 0", lineHeight: 1.45,
+          }}
+        >
+          ERA : points mérités accordés toutes les neuf manches — la note d'un lanceur. Moyenne de
+          ligue autour de 4,10 ; en jaune sous 3,20, en rouge au-dessus de 5,00.
+        </p>
+      )}
+    </div>
+  );
+}
+
 const GRADUATIONS = [18, 21, 24, 27, 30];
 const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
 
-function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
+function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert }) {
   const fini = m.etat === "Final";
   const live = m.etat === "Live";
   const p = m.coteDom;
@@ -1455,9 +1567,14 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
       : null;
 
   return (
-    <div
+    <button
+      className="alm-pill"
       title={m.infobulle}
+      onClick={() => onOuvrir(m.id)}
+      aria-label={`Détails : ${m.ext} contre ${m.dom} à ${m.hhmm}`}
+      aria-expanded={ouvert}
       style={{
+        all: "unset", cursor: "pointer", boxSizing: "border-box",
         position: "absolute",
         left: `${m.pct * 100}%`,
         top: m.voie * hauteur,
@@ -1468,7 +1585,8 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
         boxSizing: "border-box",
         background: suivi ? "rgba(194,96,58,.9)" : "rgba(11,36,26,.85)",
         border: `1px solid ${
-          m.neutre ? T.sodium : live ? T.sodium : suivi ? T.clay : "rgba(239,243,234,.24)"
+          ouvert ? T.chalk
+            : m.neutre ? T.sodium : live ? T.sodium : suivi ? T.clay : "rgba(239,243,234,.24)"
         }`,
         boxShadow: m.neutre ? `0 0 0 1px ${T.sodium}` : undefined,
         color: suivi ? "#12241B" : T.chalk,
@@ -1480,7 +1598,7 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
     >
       <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
         <Img src={CAP(m.idExt, !suivi)} alt={m.ext} size={14} />
-        <span style={{ fontSize: 7.5, opacity: .5 }}>@</span>
+        <span className="alm-mini" style={{ fontSize: 7.5, opacity: .5 }}>@</span>
         <Img src={CAP(m.idDom, !suivi)} alt={m.dom} size={14} />
         {m.neutre && (
           <span style={{ marginLeft: "auto", fontSize: 9, color: suivi ? "#12241B" : T.sodium }}>◆</span>
@@ -1516,7 +1634,7 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note }) {
           />
         </div>
       )}
-    </div>
+    </button>
   );
 }
 
@@ -1529,6 +1647,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const [ouvertEquipes, setOuvertEquipes] = useState(false);
   // La largeur d'empilement doit suivre la largeur reelle de la piste :
   // sur mobile, 15 matchs groupes a 01h s'empilent forcement davantage.
+  const [choisi, setChoisi] = useState(null); // gamePk ouvert au clic
   const [suspense, setSuspense] = useState({}); // gamePk -> indice brut
   const [jauge, setJauge] = useState({ etat: "repos", fait: 0, total: 0 });
   const pisteRef = useRef(null);
@@ -1543,7 +1662,11 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const largeur = Math.min(0.35, Math.max(0.05, PASTILLE_PX / pisteW));
   // Une ligne d'appoint (score ou note) fait grandir les pastilles.
   const ligneAppoint = spoilers || Object.keys(suspense).length > 0;
-  const hauteurVoie = ligneAppoint ? VOIE_PX + 12 : VOIE_PX;
+  // Sur piste etroite on grossit les voies : une pastille de 18 px est
+  // intouchable au doigt, la recommandation courante etant de 44.
+  const etroit = pisteW < 420;
+  const base = etroit ? VOIE_PX + 8 : VOIE_PX;
+  const hauteurVoie = ligneAppoint ? base + 12 : base;
 
   const nuits = useMemo(
     () => Array.from({ length: NB_NUITS }, (_, i) => decalerJour(ancre, i)),
@@ -1661,7 +1784,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   // Situation au classement des equipes suivies. Au-dela de cinq, la liste
   // devient un tableau de classement — ce n'est pas le role de cette vue.
   const situation = useMemo(() => {
-    if (toutes || suivies.length > 6) return [];
+    if (toutes || suivies.length > 5) return [];
     return suivies
       .map((id) => ({ eq: parId[id], b: bilans[id] }))
       .filter((x) => x.eq && x.b);
@@ -1681,7 +1804,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           (x, i, tout) =>
             tout.findIndex((y) => y.m.idExt === x.m.idExt && y.m.idDom === x.m.idDom) === i
         )
-        .slice(0, 5)
+        .slice(0, 3)
         .map((x) => x.m)
         // Selection sur l'interet, affichage dans l'ordre chronologique :
         // le panneau se lit comme un agenda, pas comme un classement.
@@ -1695,10 +1818,16 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const [lanceurs, setLanceurs] = useState({});
   const idsLanceurs = useMemo(
     () =>
-      [...new Set(aVoir.flatMap((m) => [m.idLanceurExt, m.idLanceurDom]).filter(Boolean))]
+      [
+        ...new Set(
+          [...aVoir, ...(matchOuvert ? [matchOuvert] : [])]
+            .flatMap((m) => [m.idLanceurExt, m.idLanceurDom])
+            .filter(Boolean)
+        ),
+      ]
         .sort()
         .join(","),
-    [aVoir]
+    [aVoir, matchOuvert]
   );
   useEffect(() => {
     if (!idsLanceurs) return;
@@ -1720,6 +1849,11 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
       annule = true;
     };
   }, [idsLanceurs]);
+
+  const matchOuvert = useMemo(
+    () => (choisi == null ? null : [...parNuit.values()].flat().find((m) => m.id === choisi) || null),
+    [choisi, parNuit]
+  );
 
   const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
@@ -1961,15 +2095,15 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                           : ""}
                       </span>
                       {s && (
-                        <span
-                          title={`Sur ${s.texte}`}
+                        <Glose
+                          texte={`Série en cours : ${s.texte}. Le triangle pointe vers le haut pour des victoires, vers le bas pour des défaites.`}
                           style={{
                             color: s.chaud ? (s.gagne ? T.sodium : T.clay) : T.dim,
                             fontWeight: s.chaud ? 700 : 400,
                           }}
                         >
                           {s.court}
-                        </span>
+                        </Glose>
                       )}
                       {b.clinche && (
                         <span style={{ marginLeft: "auto", color: T.sodium, fontWeight: 700 }}>
@@ -1977,25 +2111,25 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                         </span>
                       )}
                       {!b.clinche && b.magique != null && (
-                        <span
-                          title="Nombre magique : victoires de cette équipe plus défaites de son poursuivant qui suffisent à lui garantir la division. À zéro, c'est plié."
+                        <Glose
+                          texte="Nombre magique : le total de victoires de cette équipe, ajouté aux défaites de son poursuivant, qui suffit à lui garantir la division. Il baisse d'un cran à chaque victoire, et d'un cran aussi quand le poursuivant perd. À zéro, c'est plié."
                           style={{
                             marginLeft: "auto", background: "rgba(242,206,107,.16)",
                             border: `1px solid ${T.sodium}`, color: T.sodium,
                             borderRadius: 2, padding: "2px 7px", fontWeight: 700,
-                            cursor: "help",
+                            display: "inline-block",
                           }}
                         >
                           magique {b.magique}
-                        </span>
+                        </Glose>
                       )}
                       {!b.clinche && b.magique == null && b.elimination != null && (
-                        <span
-                          title="Nombre d'éliminations : défaites de cette équipe plus victoires du meneur qui la sortiraient définitivement de la course à la division."
-                          style={{ marginLeft: "auto", color: T.dim, cursor: "help" }}
+                        <Glose
+                          texte="Nombre d'éliminations : les défaites de cette équipe, ajoutées aux victoires du meneur, qui la sortiraient définitivement de la course à la division. C'est exactement le même calcul que le nombre magique, vu depuis l'autre camp."
+                          style={{ marginLeft: "auto", color: T.dim, display: "inline-block" }}
                         >
                           élimination {b.elimination}
-                        </span>
+                        </Glose>
                       )}
                     </div>
                   );
@@ -2021,7 +2155,6 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                   return (
                     <div
                       key={m.id}
-                      title={m.infobulle}
                       style={{
                         display: "flex", alignItems: "center", gap: 10,
                         background: "rgba(11,36,26,.6)",
@@ -2043,6 +2176,17 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                         <div style={{ fontSize: 13, color: T.sodium, fontStyle: "italic" }}>
                           {raisonEnvie(m, bilans, stades, stadeHabituel)}
                         </div>
+                        <div
+                          style={{
+                            fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, marginTop: 3,
+                          }}
+                        >
+                          {m.stade}
+                          {m.matchSerie && m.totalSerie
+                            ? ` · match ${m.matchSerie}/${m.totalSerie}`
+                            : ""}
+                          {m.coteDom != null ? ` · cote ${Math.round(m.coteDom * 100)} % ${m.dom}` : ""}
+                        </div>
 
                         {/* etiquettes narratives : hors du calcul des raisons,
                             elles ne volent donc la place d'aucune information */}
@@ -2050,7 +2194,14 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                           <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
                             {m.derby && <Etiquette titre="Les deux équipes sont de la même division : une victoire creuse l'écart des deux côtés à la fois.">DERBY</Etiquette>}
                             {m.finale && <Etiquette titre={`Match ${m.matchSerie} sur ${m.totalSerie} : dernier de la série.`}>FINALE</Etiquette>}
-                            {m.neutre && <Etiquette fort titre={m.stade}>TERRAIN NEUTRE</Etiquette>}
+                            {m.neutre && (
+                              <Etiquette
+                                fort
+                                titre={`Ce match ne se joue pas dans le stade habituel de l'équipe qui reçoit, mais à ${m.stade}. Une dizaine de matchs par saison seulement.`}
+                              >
+                                TERRAIN NEUTRE
+                              </Etiquette>
+                            )}
                           </div>
                         )}
 
@@ -2086,7 +2237,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 
           {/* --- graduation --- */}
           <div style={{ display: "flex", gap: 12, marginBottom: 6 }}>
-            <div style={{ width: 62, flexShrink: 0 }} />
+            <div className="alm-etiquette-nuit" style={{ width: 62, flexShrink: 0 }} />
             <div ref={pisteRef} style={{ position: "relative", flex: 1, height: 14 }}>
               {GRADUATIONS.map((h) => (
                 <div
@@ -2110,8 +2261,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             const l = libelleNuit(n);
             const ceSoir = n === nuitCourante;
             return (
-              <div key={n} style={{ display: "flex", gap: 12, marginBottom: 4 }}>
+              <div key={n}>
+              <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
                 <div
+                  className="alm-etiquette-nuit"
                   style={{
                     width: 62, flexShrink: 0, fontFamily: FF_MONO, fontSize: 10,
                     color: T.dim, paddingTop: 4, textAlign: "right", lineHeight: 1.35,
@@ -2161,6 +2314,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                       largeur={largeur}
                       hauteur={hauteurVoie}
                       note={suspense[m.id] != null ? noteSuspense(suspense[m.id]) : null}
+                      ouvert={choisi === m.id}
+                      onOuvrir={(id) => setChoisi((c) => (c === id ? null : id))}
                     />
                   ))}
                   {!liste.length && (
@@ -2175,6 +2330,18 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                   )}
                 </div>
               </div>
+              {matchOuvert && matchOuvert.nuit === n && (
+                <DetailMatch
+                  m={matchOuvert}
+                  parId={parId}
+                  stades={stades}
+                  lanceurs={lanceurs}
+                  note={suspense[matchOuvert.id] != null ? noteSuspense(suspense[matchOuvert.id]) : null}
+                  spoilers={spoilers}
+                  onFermer={() => setChoisi(null)}
+                />
+              )}
+              </div>
             );
           })}
 
@@ -2186,9 +2353,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             {total} match{total > 1 ? "s" : ""} sur {NB_NUITS} nuits — dont{" "}
             <span style={{ color: T.sodium }}>{soiree} en soirée</span>, avant minuit.
             <br />
+            Touche une pastille pour ouvrir le détail du match.
+            <br />
             Chaque ligne est une nuit : elle court de 17h à 07h, minuit au centre. La zone claire
-            à gauche est ce qui se regarde sans réveil. Survole une pastille pour le stade et les
-            lanceurs annoncés.
+            à gauche est ce qui se regarde sans réveil. Les termes encadrés s'expliquent au clic.
             <br />
             <span style={{ color: T.sodium }}>◆</span> signale un match hors du stade habituel — dix
             par saison, dont Mexico, Las Vegas et le champ de maïs de l'Iowa.
@@ -2342,6 +2510,19 @@ export default function App() {
     .alm-cell:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 2px; }
     .alm-tab:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 3px; }
     select.alm-sel { -webkit-appearance:none; appearance:none; }
+
+    /* Zone tactile etendue sans toucher a la mise en page : le pseudo-element
+       agrandit la cible de clic du bouton sans deplacer quoi que ce soit. */
+    .alm-pill::before { content: ""; position: absolute; inset: -3px -2px; }
+
+    /* Ecrans etroits : on recupere de la largeur partout ou elle est gaspillee. */
+    @media (max-width: 560px) {
+      .alm-page { padding-left: 12px !important; padding-right: 12px !important; }
+      .alm-titre { font-size: 32px !important; }
+      .alm-etiquette-nuit { width: 44px !important; }
+      .alm-detail { margin-left: 0 !important; }
+      .alm-mini { font-size: 9.5px !important; }
+    }
     @media (prefers-reduced-motion: reduce) {
       .alm-rise { animation: none; }
       svg line { animation: none !important; stroke-dashoffset: 0 !important; }
@@ -2371,7 +2552,7 @@ export default function App() {
   return (
     <div style={{ background: mow, minHeight: "100%", color: T.chalk, fontFamily: FF_BODY }}>
       <style>{css}</style>
-      <div style={{ maxWidth: 820, margin: "0 auto", padding: "28px 20px 56px" }}>
+      <div className="alm-page" style={{ maxWidth: 820, margin: "0 auto", padding: "28px 20px 56px" }}>
 
         <header
           style={{
@@ -2389,6 +2570,7 @@ export default function App() {
               Carnet de marque
             </div>
             <h1
+              className="alm-titre"
               style={{
                 fontFamily: FF_DISPLAY, fontWeight: 800, fontSize: 42, lineHeight: .92,
                 margin: "4px 0 0", letterSpacing: ".01em", textTransform: "uppercase",
