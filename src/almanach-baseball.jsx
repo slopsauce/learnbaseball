@@ -1575,6 +1575,41 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer }) {
   );
 }
 
+/* ---------------------------------------------------------------- *
+ *  LE MATCH DU JOUR
+ *  Pas le meilleur des deux semaines — « A ne pas rater » s'en charge —
+ *  mais le meilleur de la prochaine nuit qui contient encore un match a
+ *  venir. La question n'est pas la meme : que regarder ce soir ?
+ * ---------------------------------------------------------------- */
+function choisirMatchDuJour(tous, bilans, maintenant = Date.now()) {
+  const avenir = tous.filter((m) => m.debut && new Date(m.debut).getTime() > maintenant);
+  if (!avenir.length) return null;
+
+  // La nuit la plus proche qui contienne encore quelque chose.
+  const nuit = avenir.map((m) => m.nuit).sort()[0];
+  const dedans = avenir.filter((m) => m.nuit === nuit);
+
+  const notes = dedans.map((m) => ({ m, s: indiceEnvie(m, bilans) }));
+  const max = Math.max(...notes.map((x) => x.s));
+  // Quand plusieurs matchs se tiennent, on laisse la date trancher : la
+  // proposition varie d'un jour a l'autre sans jamais bouger dans la journee.
+  const exaequo = notes.filter((x) => x.s >= max - 0.08).map((x) => x.m);
+  const graine = Number(nuit.replaceAll("-", ""));
+  return exaequo[graine % exaequo.length];
+}
+
+/* « dans 4 h 12 », « dans 38 min », « c'est maintenant ». */
+function compteARebours(debut, maintenant = Date.now()) {
+  const ms = new Date(debut).getTime() - maintenant;
+  if (ms <= 0) return "c'est maintenant";
+  const min = Math.round(ms / 60000);
+  if (min < 60) return `dans ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `dans ${h} h${min % 60 ? ` ${String(min % 60).padStart(2, "0")}` : ""}`;
+  const j = Math.round(h / 24);
+  return j <= 1 ? "demain" : `dans ${j} jours`;
+}
+
 const GRADUATIONS = [18, 21, 24, 27, 30];
 const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
 
@@ -1718,6 +1753,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             const brut = (h - DEBUT) / (FIN - DEBUT);
             out.push({
               id: g.gamePk,
+              debut: g.gameDate,   // instant UTC, pour le compte a rebours
               nuit,
               h,
               hhmm,
@@ -1816,6 +1852,19 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
       .filter((x) => x.eq && x.b);
   }, [suivies, bilans, parId, toutes]);
 
+  // Horloge du compte a rebours : une minute suffit, personne ne compte
+  // les secondes avant un match qui dure trois heures.
+  const [instant, setInstant] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setInstant(Date.now()), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const matchDuJour = useMemo(
+    () => choisirMatchDuJour([...parNuit.values()].flat(), bilans, instant),
+    [parNuit, bilans, instant]
+  );
+
   // Les trois matchs a venir les plus tentants de la fenetre affichee.
   const aVoir = useMemo(
     () =>
@@ -1823,6 +1872,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         .flat()
         .map((m) => ({ m, s: indiceEnvie(m, bilans) }))
         .filter((x) => x.s > 0)
+        // Deja mis en avant juste au-dessus : inutile de le redire.
+        .filter((x) => x.m.id !== matchDuJour?.id)
         .sort((a, b) => b.s - a.s)
         // Une meme affiche revient plusieurs fois dans une serie : on ne
         // garde que sa meilleure occurrence, pour varier le panneau.
@@ -1830,12 +1881,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           (x, i, tout) =>
             tout.findIndex((y) => y.m.idExt === x.m.idExt && y.m.idDom === x.m.idDom) === i
         )
-        .slice(0, 5)
+        .slice(0, 3)
         .map((x) => x.m)
         // Selection sur l'interet, affichage dans l'ordre chronologique :
         // le panneau se lit comme un agenda, pas comme un classement.
         .sort((a, b) => (a.nuit === b.nuit ? a.h - b.h : a.nuit < b.nuit ? -1 : 1)),
-    [parNuit, bilans]
+    [parNuit, bilans, matchDuJour]
   );
 
   const matchOuvert = useMemo(
@@ -1851,14 +1902,14 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     () =>
       [
         ...new Set(
-          [...aVoir, ...(matchOuvert ? [matchOuvert] : [])]
+          [...aVoir, ...(matchOuvert ? [matchOuvert] : []), ...(matchDuJour ? [matchDuJour] : [])]
             .flatMap((m) => [m.idLanceurExt, m.idLanceurDom])
             .filter(Boolean)
         ),
       ]
         .sort()
         .join(","),
-    [aVoir, matchOuvert]
+    [aVoir, matchOuvert, matchDuJour]
   );
   useEffect(() => {
     if (!idsLanceurs) return;
@@ -2085,6 +2136,79 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 
       {phase === "ok" && (
         <>
+          {/* --- le match du jour --- */}
+          {matchDuJour && (
+            <div
+              className="alm-rise"
+              style={{
+                border: `1px solid ${T.sodium}`, borderRadius: 3,
+                background: "rgba(242,206,107,.07)", padding: "14px 16px", marginBottom: 22,
+              }}
+            >
+              <div
+                style={{
+                  display: "flex", alignItems: "baseline", justifyContent: "space-between",
+                  gap: 10, flexWrap: "wrap", marginBottom: 10,
+                }}
+              >
+                <span
+                  style={{
+                    fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em", color: T.sodium,
+                  }}
+                >
+                  LE MATCH DU JOUR
+                </span>
+                <span style={{ fontFamily: FF_MONO, fontSize: 12, color: T.chalk }}>
+                  {compteARebours(matchDuJour.debut, instant)}
+                </span>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <Img src={CAP(matchDuJour.idExt)} alt="" size={38} />
+                <Img src={CAP(matchDuJour.idDom)} alt="" size={38} />
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      fontFamily: FF_DISPLAY, fontSize: 26, lineHeight: 1,
+                      textTransform: "uppercase", letterSpacing: ".02em",
+                    }}
+                  >
+                    {parId[matchDuJour.idExt]?.name || matchDuJour.ext}
+                    <span style={{ color: T.dim }}> @ </span>
+                    {parId[matchDuJour.idDom]?.name || matchDuJour.dom}
+                  </div>
+                  <div style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, marginTop: 4 }}>
+                    {libelleNuit(matchDuJour.nuit).soir}
+                    <span style={{ color: matchDuJour.h < 24 ? T.sodium : T.chalk, fontWeight: 700 }}>
+                      {" · "}{matchDuJour.hhmm.replace(":", "h")}
+                    </span>
+                    {" Paris · "}{matchDuJour.stade}
+                  </div>
+                </div>
+              </div>
+
+              <p style={{ fontSize: 14, color: T.sodium, fontStyle: "italic", margin: "10px 0 0" }}>
+                {raisonEnvie(matchDuJour, bilans, stades, stadeHabituel)}
+              </p>
+
+              {(matchDuJour.derby || matchDuJour.finale || matchDuJour.neutre) && (
+                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 8 }}>
+                  {matchDuJour.derby && <Etiquette titre="Les deux équipes sont de la même division : une victoire creuse l'écart des deux côtés à la fois.">DERBY</Etiquette>}
+                  {matchDuJour.finale && <Etiquette titre={`Match ${matchDuJour.matchSerie} sur ${matchDuJour.totalSerie} : dernier de la série.`}>FINALE</Etiquette>}
+                  {matchDuJour.neutre && <Etiquette fort titre={`Joué à ${matchDuJour.stade}, hors du stade habituel.`}>TERRAIN NEUTRE</Etiquette>}
+                </div>
+              )}
+
+              {matchDuJour.idLanceurExt && matchDuJour.idLanceurDom && (
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 11 }}>
+                  <Lanceur id={matchDuJour.idLanceurExt} nom={matchDuJour.lanceurExt} st={lanceurs[matchDuJour.idLanceurExt]} />
+                  <span style={{ color: T.clay, fontSize: 12, alignSelf: "center" }}>×</span>
+                  <Lanceur id={matchDuJour.idLanceurDom} nom={matchDuJour.lanceurDom} st={lanceurs[matchDuJour.idLanceurDom]} />
+                </div>
+              )}
+            </div>
+          )}
+
           {/* --- la situation au classement --- */}
           {situation.length > 0 && (
             <div style={{ marginBottom: 22 }}>
@@ -2728,7 +2852,7 @@ function btnStyle(primaire) {
  *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
  * --------------------------------------------------------------------- */
 export {
-  ongletDepuisFragment,
+  ongletDepuisFragment, choisirMatchDuJour, compteARebours,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,

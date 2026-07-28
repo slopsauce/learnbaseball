@@ -413,3 +413,56 @@ describe("adressage par fragment d'URL", () => {
       assert.ok(["carnet", "nuits"].includes(A.ongletDepuisFragment(h)));
   });
 });
+
+describe("le match du jour", () => {
+  const T0 = Date.parse("2026-07-28T12:00:00Z");
+  const h = (n) => new Date(T0 + n * 3600e3).toISOString();
+  const jeu = [
+    { ...match({ id: 1, nuit: "2026-07-27", h: 20 }), debut: h(-24) }, // passe
+    { ...match({ id: 2, nuit: "2026-07-28", h: 27, hhmm: "03:00" }), debut: h(15) },
+    { ...match({ id: 3, nuit: "2026-07-28", h: 20, hhmm: "20:00" }), debut: h(8) },
+    { ...match({ id: 4, nuit: "2026-07-30", h: 20 }), debut: h(56) },
+  ];
+
+  test("ignore les matchs deja commences", () => {
+    const m = A.choisirMatchDuJour(jeu, {}, T0);
+    assert.notEqual(m.id, 1, "un match passe ne peut pas etre celui du jour");
+  });
+  test("choisit dans la nuit la plus proche, pas la meilleure du mois", () => {
+    const m = A.choisirMatchDuJour(jeu, {}, T0);
+    assert.equal(m.nuit, "2026-07-28", "doit rester sur la prochaine nuit disponible");
+  });
+  test("dans cette nuit, prefere le match le plus tentant", () => {
+    const m = A.choisirMatchDuJour(jeu, {}, T0);
+    assert.equal(m.id, 3, "20h doit primer sur 03h du matin");
+  });
+  test("est stable dans la journee", () => {
+    const a = A.choisirMatchDuJour(jeu, {}, T0);
+    const b = A.choisirMatchDuJour(jeu, {}, T0 + 3600e3);
+    assert.equal(a.id, b.id, "la proposition ne doit pas changer d'heure en heure");
+  });
+  test("renvoie null quand plus rien n'est a venir", () => {
+    assert.equal(A.choisirMatchDuJour(jeu, {}, Date.parse("2027-01-01")), null);
+    assert.equal(A.choisirMatchDuJour([], {}, T0), null);
+  });
+  test("tolere un match sans instant de debut", () => {
+    assert.doesNotThrow(() => A.choisirMatchDuJour([match({ id: 9 })], {}, T0));
+  });
+});
+
+describe("compte a rebours", () => {
+  const T0 = Date.parse("2026-07-28T12:00:00Z");
+  const dans = (min) => new Date(T0 + min * 60000).toISOString();
+  test("exprime les minutes puis les heures", () => {
+    assert.match(A.compteARebours(dans(38), T0), /38 min/);
+    assert.match(A.compteARebours(dans(252), T0), /4 h/);
+  });
+  test("bascule sur les jours au-dela de vingt-quatre heures", () => {
+    assert.match(A.compteARebours(dans(60 * 30), T0), /demain|jours/);
+    assert.match(A.compteARebours(dans(60 * 72), T0), /3 jours/);
+  });
+  test("gere l'instant present et le passe", () => {
+    assert.equal(A.compteARebours(dans(0), T0), "c'est maintenant");
+    assert.equal(A.compteARebours(dans(-30), T0), "c'est maintenant");
+  });
+});
