@@ -1672,7 +1672,8 @@ function anecdote(m, stades, stadeHabituel) {
 
 /* Panneau de detail : remplace l'infobulle, inutilisable au toucher.
    Il s'ouvre sous la nuit concernee pour rester dans son contexte. */
-function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif }) {
+function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif, resumes }) {
+  const [visionnage, setVisionnage] = useState(null);
   const eqE = parId[m.idExt], eqD = parId[m.idDom];
   const s = stades[m.idStade];
   const fini = m.etat === "Final";
@@ -1752,6 +1753,69 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
         </div>
       )}
 
+      {/* Les montages officiels du match. Le titre du resume commente
+          annonce le vainqueur : on ne l'affiche jamais tant que les scores
+          sont masques, et on ne met pas de vignette pour la meme raison. */}
+      {m.etat === "Final" && !m.reporte && resumes && (resumes.recap || resumes.condense) && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {resumes.condense && (
+              <button
+                className="alm-btn"
+                onClick={() => setVisionnage(visionnage === "condense" ? null : resumes.condense)}
+                style={btnStyle(visionnage?.url === resumes.condense.url)}
+              >
+                Match condensé · {resumes.condense.duree?.replace(/^00:/, "")}
+              </button>
+            )}
+            {resumes.recap && (
+              <button
+                className="alm-btn"
+                onClick={() => setVisionnage(visionnage?.url === resumes.recap.url ? null : resumes.recap)}
+                style={btnStyle(false)}
+              >
+                Résumé commenté · {resumes.recap.duree?.replace(/^00:/, "")}
+              </button>
+            )}
+          </div>
+
+          {visionnage && (
+            <div style={{ marginTop: 10 }}>
+              <video
+                key={visionnage.url}
+                src={visionnage.url}
+                controls
+                autoPlay
+                preload="none"
+                playsInline
+                style={{
+                  width: "100%", display: "block", borderRadius: 3,
+                  background: "#000", border: "1px solid rgba(239,243,234,.2)",
+                }}
+              />
+              <p style={{ fontSize: 10, color: T.dim, margin: "6px 0 0" }}>
+                {visionnage.adaptatif
+                  ? "Flux adaptatif : la qualité s'ajuste au débit."
+                  : "Fichier unique en 720p — le condensé pèse environ 345 Mo, à éviter en données mobiles."}
+              </p>
+            </div>
+          )}
+
+          {!spoilers && (
+            <p style={{ fontSize: 10, color: T.dim, margin: "8px 0 0" }}>
+              Le résumé commenté annonce le vainqueur dès les premières secondes. Le match condensé,
+              lui, enchaîne les actions sans commentaire.
+            </p>
+          )}
+        </div>
+      )}
+
+      {m.etat === "Final" && !m.reporte && resumes === undefined && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, marginTop: 12 }}>
+          Recherche des montages…
+        </p>
+      )}
+
       {(lanceurs[m.idLanceurExt] || lanceurs[m.idLanceurDom]) && (
         <p
           style={{
@@ -1773,8 +1837,18 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
  *  mais le meilleur de la prochaine nuit qui contient encore un match a
  *  venir. La question n'est pas la meme : que regarder ce soir ?
  * ---------------------------------------------------------------- */
+/* Au-dela de deux jours, ce n'est plus « du jour ». Cette borne sert aussi de
+   garde-fou quand on feuillette les semaines suivantes : sans elle, avancer
+   d'une semaine proposerait un match dans huit jours avec un compte a rebours
+   absurde. « A ne pas rater » est l'outil pour planifier loin, pas celui-ci. */
+const HORIZON_JOUR = 48 * 3600e3;
+
 function choisirMatchDuJour(tous, bilans, maintenant = Date.now()) {
-  const avenir = tous.filter((m) => m.debut && new Date(m.debut).getTime() > maintenant);
+  const avenir = tous.filter((m) => {
+    if (!m.debut) return false;
+    const dans = new Date(m.debut).getTime() - maintenant;
+    return dans > 0 && dans <= HORIZON_JOUR;
+  });
   if (!avenir.length) return null;
 
   // La nuit la plus proche qui contienne encore quelque chose.
@@ -1800,6 +1874,38 @@ function compteARebours(debut, maintenant = Date.now()) {
   if (h < 24) return `dans ${h} h${min % 60 ? ` ${String(min % 60).padStart(2, "0")}` : ""}`;
   const j = Math.round(h / 24);
   return j <= 1 ? "demain" : `dans ${j} jours`;
+}
+
+/* ---------------------------------------------------------------- *
+ *  RESUMES DE MATCH
+ *  Deux montages officiels accompagnent chaque match termine :
+ *    mlb_recap       ~3 min, commente, et dont LE TITRE SPOILE
+ *    condensed_game  ~11 min, toutes les actions, titre neutre
+ *  Les mp4 sont enormes (345 Mo pour le condense, 1,3 Go en haute
+ *  definition) et il n'existe pas de variante legere. Les flux HLS sont
+ *  adaptatifs et bien plus econome : on les prefere quand le navigateur
+ *  sait les lire nativement — Safari oui, Chrome demanderait hls.js.
+ * ---------------------------------------------------------------- */
+function sourceLisible(playbacks = []) {
+  const hls = playbacks.find((p) => p.name === "hlsCloud" || p.url?.endsWith(".m3u8"));
+  const mp4 = playbacks.find((p) => p.name === "mp4Avc") || playbacks.find((p) => p.url?.endsWith(".mp4"));
+  if (hls && typeof document !== "undefined") {
+    const v = document.createElement("video");
+    if (v.canPlayType("application/vnd.apple.mpegurl")) return { url: hls.url, adaptatif: true };
+  }
+  return mp4 ? { url: mp4.url, adaptatif: false } : null;
+}
+
+function extraireResumes(contenu) {
+  const items = contenu?.highlights?.highlights?.items || [];
+  const par = (tax) =>
+    items.find((it) => (it.keywordsAll || []).some((k) => k.type === "mlbtax" && k.value === tax));
+  const monter = (it) => {
+    if (!it) return null;
+    const s = sourceLisible(it.playbacks);
+    return s ? { ...s, duree: it.duration, titre: it.title } : null;
+  };
+  return { recap: monter(par("mlb_recap")), condense: monter(par("condensed_game")) };
 }
 
 /* Un match reporte dont le rattrapage est deja programme apparait deux fois
@@ -2167,6 +2273,9 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     [parNuit, bilans, matchDuJour]
   );
 
+  /* Le contenu d'un match pese 468 Ko et le filtre `fields` n'y fait rien :
+     on ne le charge donc qu'a l'ouverture d'une fiche de match termine. */
+  const [resumes, setResumes] = useState({});
   const matchOuvert = useMemo(
     () => (choisi == null ? null : [...parNuit.values()].flat().find((m) => m.cle === choisi) || null),
     [choisi, parNuit]
@@ -2209,6 +2318,19 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
       annule = true;
     };
   }, [idsLanceurs]);
+
+  useEffect(() => {
+    const m = matchOuvert;
+    if (!m || m.etat !== "Final" || m.reporte || resumes[m.id] !== undefined) return;
+    let annule = false;
+    fetch(`${API}/game/${m.id}/content`)
+      .then((r) => r.json())
+      .then((c) => !annule && setResumes((x) => ({ ...x, [m.id]: extraireResumes(c) })))
+      .catch(() => !annule && setResumes((x) => ({ ...x, [m.id]: null })));
+    return () => {
+      annule = true;
+    };
+  }, [matchOuvert, resumes]);
 
   const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
@@ -2768,6 +2890,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                   note={suspense[matchOuvert.id] != null ? noteSuspense(suspense[matchOuvert.id]) : null}
                   spoilers={spoilers}
                   vif={direct[matchOuvert.id]}
+                  resumes={resumes[matchOuvert.id]}
                   onFermer={() => setChoisi(null)}
                 />
               )}
@@ -3132,7 +3255,7 @@ function btnStyle(primaire) {
  *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
  * --------------------------------------------------------------------- */
 export {
-  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche, purgerReports,
+  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche, purgerReports, HORIZON_JOUR, extraireResumes, sourceLisible,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,

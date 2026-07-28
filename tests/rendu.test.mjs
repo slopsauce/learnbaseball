@@ -86,3 +86,4 @@ describe("garde-fous de mise en page", () => {
       "le rendu ne doit dependre d'aucune API navigateur");
   });
 });
+

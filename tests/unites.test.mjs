@@ -585,3 +585,89 @@ describe("doublons de matchs reportés", () => {
     assert.equal(fantome.id, vrai.id);
   });
 });
+
+describe("le match du jour ne suit pas la fenêtre consultée", () => {
+  const T0 = Date.parse("2026-07-28T12:00:00Z");
+  const dans = (h) => new Date(T0 + h * 3600e3).toISOString();
+
+  /* Regression : le match du jour etait tire de la fenetre affichee. Avancer
+     d'une semaine proposait donc un match dans huit jours. */
+  test("ignore les nuits au-delà de l'horizon", () => {
+    const semaineProchaine = [
+      { ...match({ id: 7, nuit: "2026-08-04", h: 20 }), debut: dans(24 * 7) },
+      { ...match({ id: 8, nuit: "2026-08-05", h: 20 }), debut: dans(24 * 8) },
+    ];
+    assert.equal(A.choisirMatchDuJour(semaineProchaine, {}, T0), null,
+      "aucune proposition quand la fenetre ne contient que du lointain");
+  });
+
+  test("accepte ce soir et la nuit suivante", () => {
+    const proche = [{ ...match({ id: 1, nuit: "2026-07-28", h: 20 }), debut: dans(8) }];
+    assert.ok(A.choisirMatchDuJour(proche, {}, T0), "ce soir doit passer");
+    const demain = [{ ...match({ id: 2, nuit: "2026-07-29", h: 20 }), debut: dans(32) }];
+    assert.ok(A.choisirMatchDuJour(demain, {}, T0), "demain soir doit passer aussi");
+  });
+
+  test("l'horizon reste crédible", () => {
+    const heures = A.HORIZON_JOUR / 3600e3;
+    assert.ok(heures >= 24 && heures <= 72, `horizon de ${heures} h, valeur invraisemblable`);
+  });
+
+  test("ne propose rien quand on remonte dans le passé", () => {
+    const passe = [{ ...match({ id: 3, nuit: "2026-07-20", h: 20 }), debut: dans(-24 * 8) }];
+    assert.equal(A.choisirMatchDuJour(passe, {}, T0), null);
+  });
+});
+
+describe("résumés de match", () => {
+  const contenu = (items) => ({ highlights: { highlights: { items } } });
+  const item = (tax, titre, duree, playbacks) => ({
+    title: titre, duration: duree, playbacks,
+    keywordsAll: [{ type: "mlbtax", value: tax }, { type: "taxonomy", value: "x" }],
+  });
+  const mp4 = [{ name: "mp4Avc", url: "https://x/y_1280x720_59_4000K.mp4" }];
+  const avecHls = [{ name: "hlsCloud", url: "https://x/y.m3u8" }, ...mp4];
+
+  test("distingue le condensé du résumé commenté", () => {
+    const r = A.extraireResumes(contenu([
+      item("mlb_recap", "Machin lead Truc in win", "00:02:55", mp4),
+      item("condensed_game", "Condensed Game: A@B", "00:11:29", mp4),
+    ]));
+    assert.equal(r.recap.duree, "00:02:55");
+    assert.equal(r.condense.duree, "00:11:29");
+  });
+
+  test("ignore les clips d'action", () => {
+    const r = A.extraireResumes(contenu([
+      { title: "un circuit", guid: "abc", playbacks: mp4, keywordsAll: [] },
+    ]));
+    assert.equal(r.recap, null);
+    assert.equal(r.condense, null);
+  });
+
+  test("ne casse pas sur un contenu absent ou vide", () => {
+    for (const c of [null, {}, contenu([])]) {
+      const r = A.extraireResumes(c);
+      assert.equal(r.recap, null);
+      assert.equal(r.condense, null);
+    }
+  });
+
+  test("écarte un montage sans source lisible", () => {
+    const r = A.extraireResumes(contenu([item("mlb_recap", "t", "00:03:00", [])]));
+    assert.equal(r.recap, null, "un montage sans playback ne doit pas produire de bouton mort");
+  });
+
+  test("retombe sur le mp4 hors d'un navigateur", () => {
+    // Au rendu serveur, `document` n'existe pas : la detection HLS doit
+    // se contenter du mp4 plutot que de lever.
+    const s = A.sourceLisible(avecHls);
+    assert.ok(s.url.endsWith(".mp4"));
+    assert.equal(s.adaptatif, false);
+  });
+
+  test("renvoie null faute de toute source", () => {
+    assert.equal(A.sourceLisible([]), null);
+    assert.equal(A.sourceLisible([{ name: "trickplay", url: "https://x/y.jpg" }]), null);
+  });
+});
