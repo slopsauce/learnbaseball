@@ -2021,7 +2021,9 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert
         }`,
         boxShadow: m.neutre ? `0 0 0 1px ${T.sodium}` : undefined,
         color: suivi ? "#12241B" : T.chalk,
-        opacity: fini && !spoilers && note == null ? 0.6 : 1,
+        // Toute la nuit est affichee : on estompe ce qu'on ne suit pas pour
+        // que les pastilles en terre battue ressortent.
+        opacity: (fini && !spoilers && note == null ? 0.6 : 1) * (suivi ? 1 : 0.55),
         fontFamily: FF_MONO,
         lineHeight: 1,
         overflow: "hidden",
@@ -2297,7 +2299,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     const carte = new Map(nuits.map((n) => [n, []]));
     for (const m of matchs) {
       if (!carte.has(m.nuit)) continue;
-      if (!toutes && !estSuivi(m)) continue;
+      // La frise montre TOUS les matchs : le filtre ne sert plus qu'a la
+      // couleur des pastilles et a ce qui nourrit les recommandations.
       carte.get(m.nuit).push(m);
     }
     for (const [, liste] of carte) {
@@ -2394,16 +2397,23 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const base = etroit ? VOIE_PX + 8 : VOIE_PX;
   const hauteurVoie = ligneAppoint ? base + 12 : base;
 
+  /* Les recommandations, elles, restent centrees sur tes equipes : la frise
+     te montre la nuit entiere, mais on ne te propose pas d'aller regarder
+     une affiche que tu n'as pas choisi de suivre. */
+  const aSuivre = useMemo(
+    () => [...parNuit.values()].flat().filter(estSuivi),
+    [parNuit, suivies, toutes]
+  );
+
   const matchDuJour = useMemo(
-    () => choisirMatchDuJour([...parNuit.values()].flat(), bilans, instant),
-    [parNuit, bilans, instant]
+    () => choisirMatchDuJour(aSuivre, bilans, instant),
+    [aSuivre, bilans, instant]
   );
 
   // Les trois matchs a venir les plus tentants de la fenetre affichee.
   const aVoir = useMemo(
     () =>
-      [...parNuit.values()]
-        .flat()
+      aSuivre
         .map((m) => ({ m, s: indiceEnvie(m, bilans) }))
         .filter((x) => x.s > 0)
         // Deja mis en avant juste au-dessus : inutile de le redire.
@@ -2420,7 +2430,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         // Selection sur l'interet, affichage dans l'ordre chronologique :
         // le panneau se lit comme un agenda, pas comme un classement.
         .sort((a, b) => (a.nuit === b.nuit ? a.h - b.h : a.nuit < b.nuit ? -1 : 1)),
-    [parNuit, bilans, matchDuJour]
+    [aSuivre, bilans, matchDuJour]
   );
 
   /* Le contenu d'un match pese 468 Ko et le filtre `fields` n'y fait rien :
@@ -2484,6 +2494,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 
   const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
+  const miens = toutes ? 0 : aSuivre.length;
 
   // La nuit "en cours" : avant 7h du matin, on est encore dans celle d'hier.
   const nuitCourante = useMemo(() => {
@@ -2500,8 +2511,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
      Le filtre `fields` fait tomber la reponse de 1,1 Mo a 9,5 Ko par match ;
      sans lui, la fonctionnalite serait inutilisable. */
   const jauger = async () => {
-    const cibles = [...parNuit.values()]
-      .flat()
+    // On ne depense pas le budget de 45 requetes sur des matchs qu'on ne suit pas.
+    const cibles = aSuivre
       .filter((m) => m.etat === "Final" && !m.reporte && suspense[m.id] == null)
       .map((m) => m.id);
     if (!cibles.length) return;
@@ -2988,6 +2999,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           >
             {total} match{total > 1 ? "s" : ""} sur {NB_NUITS} nuits — dont{" "}
             <span style={{ color: T.sodium }}>{soiree} en soirée</span>, avant minuit.
+            {miens > 0 ? (
+              <>
+                {" "}
+                <span style={{ color: T.clay }}>{miens} concernent tes équipes</span>, en terre battue.
+              </>
+            ) : null}
             <br />
             Touche une pastille pour ouvrir le détail du match.
             <br />

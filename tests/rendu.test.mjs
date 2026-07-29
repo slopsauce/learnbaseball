@@ -206,3 +206,22 @@ describe("aucune fuite de résultat au rendu", () => {
     assert.equal(rendre(React.createElement(BandeauSituation, { situation: [], spoilers: true })), "");
   });
 });
+
+describe("frise complète, recommandations ciblées", () => {
+  /* La frise doit montrer toute la nuit, mais « À ne pas rater » et le match
+     du jour ne doivent proposer que des équipes suivies. Deux notions
+     distinctes qui etaient confondues dans un seul filtre. */
+  test("la vue se rend avec une sélection restreinte", () => {
+    assert.doesNotThrow(() =>
+      rendre(React.createElement(VueNuits, {
+        teams: [equipe], suivies: [119], setSuivies: () => {},
+        bilans: bilan, stades, stadeHabituel: { 119: 22 },
+      })));
+  });
+  test("et sans aucune sélection", () => {
+    assert.doesNotThrow(() =>
+      rendre(React.createElement(VueNuits, {
+        teams: [equipe], suivies: [], setSuivies: () => {}, bilans: bilan,
+      })));
+  });
+});
