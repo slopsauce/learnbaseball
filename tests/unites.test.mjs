@@ -899,3 +899,315 @@ describe("liens Wikipédia des stades", () => {
     assert.equal(A.lienWiki(null), null);
   });
 });
+
+describe("le direct", () => {
+  test("le filtre de champs couvre ce que la vue affiche", () => {
+    for (const c of ["linescore", "currentInningOrdinal", "inningState", "balls", "strikes",
+                     "outs", "offense", "defense", "innings", "currentPlay", "description"])
+      assert.ok(A.CHAMPS_DIRECT.includes(c), `champ ${c} absent du filtre`);
+  });
+
+  test("la cadence reste raisonnable", () => {
+    // Un lancer toutes les vingt secondes environ : plus rapide serait du gâchis,
+    // plus lent donnerait un direct qui traîne.
+    assert.ok(A.CADENCE_DIRECT >= 10000 && A.CADENCE_DIRECT <= 30000,
+      `${A.CADENCE_DIRECT} ms, cadence invraisemblable`);
+  });
+
+  test("le filtre reste court", () => {
+    // C'est lui qui fait tomber la requête de 625 Ko à 1,6 Ko.
+    assert.ok(A.CHAMPS_DIRECT.length < 500, "filtre trop bavard");
+    assert.doesNotMatch(A.CHAMPS_DIRECT, /\s/, "les espaces casseraient l'URL");
+  });
+});
+
+describe("déroulé du match", () => {
+  const act = (manche, demi, texte, points = false) => ({
+    result: { description: texte },
+    about: { inning: manche, halfInning: demi, isScoringPlay: points },
+  });
+
+  test("regroupe par demi-manche, la plus récente en tête", () => {
+    const g = A.grouperParManche([
+      act(1, "top", "A"), act(1, "top", "B"),
+      act(1, "bottom", "C"),
+      act(2, "top", "D"),
+    ]);
+    assert.equal(g.length, 3);
+    assert.equal(g[0].manche, 2, "la manche la plus récente doit venir en premier");
+    assert.equal(g[2].manche, 1);
+    assert.equal(g[2].demi, "top");
+  });
+
+  test("inverse aussi les actions dans chaque manche", () => {
+    const g = A.grouperParManche([act(1, "top", "premier"), act(1, "top", "second")]);
+    assert.equal(g[0].actions[0].result.description, "second", "la dernière action doit être en tête");
+  });
+
+  test("écarte les actions sans description", () => {
+    const g = A.grouperParManche([act(1, "top", "A"), { about: { inning: 1, halfInning: "top" } }]);
+    assert.equal(g[0].actions.length, 1);
+  });
+
+  test("ne casse pas sur une liste vide", () => {
+    assert.deepEqual(A.grouperParManche([]), []);
+    assert.deepEqual(A.grouperParManche(), []);
+  });
+
+  test("le filtre de l'historique reste léger", () => {
+    // C'est lui qui fait tomber la requête de 677 Ko à 12 Ko.
+    assert.ok(A.CHAMPS_HISTOIRE.includes("allPlays"));
+    assert.ok(A.CHAMPS_HISTOIRE.includes("description"));
+    assert.ok(A.CHAMPS_HISTOIRE.length < 250, "filtre trop bavard");
+  });
+
+  test("l'historique se rafraîchit moins vite que l'état courant", () => {
+    // Une action toutes les deux ou trois minutes : inutile de la relire
+    // aussi souvent que le compte de balles.
+    assert.ok(A.CADENCE_HISTOIRE > A.CADENCE_DIRECT);
+    assert.ok(A.CADENCE_HISTOIRE <= 120000);
+  });
+});
+
+describe("codes du marqueur dans le déroulé", () => {
+  const act = (eventType, description, extra = {}) => ({
+    result: { eventType, description, rbi: 0, ...extra.result },
+    about: { inning: 1, halfInning: "top", ...extra.about },
+    playEvents: extra.playEvents || [],
+  });
+
+  test("reconnaît les issues de présence au bâton", () => {
+    assert.equal(A.codeAction(act("home_run", "hits a home run")).code, "HR");
+    assert.equal(A.codeAction(act("walk", "walks")).code, "BB");
+    assert.equal(A.codeAction(act("strikeout", "strikes out")).code, "K");
+    assert.equal(A.codeAction(act("single", "singles")).code, "1B");
+  });
+
+  test("distingue les trajectoires d'un retrait au champ", () => {
+    assert.equal(A.codeAction(act("field_out", "grounds out to short")).code, "6-3");
+    assert.equal(A.codeAction(act("field_out", "flies out to center")).code, "F8");
+  });
+
+  test("repère les actions de course cachées dans playEvents", () => {
+    const a = act("strikeout", "strikes out", {
+      playEvents: [{ type: "action", details: { eventType: "stolen_base_2b" } }],
+    });
+    assert.equal(A.codeAction(a).code, "K", "l'issue au bâton prime sur l'action de course");
+    const b = act("game_advisory", "…", {
+      playEvents: [{ type: "action", details: { eventType: "wild_pitch" } }],
+    });
+    assert.equal(A.codeAction(b).code, "WP");
+  });
+
+  test("le grand chelem se distingue du circuit", () => {
+    const a = act("home_run", "grand slam", { result: { rbi: 4 } });
+    assert.equal(A.codeAction(a).code, "GS");
+  });
+
+  test("la couleur suit la catégorie", () => {
+    const point = A.codeAction(act("single", "singles, run scores", { about: { isScoringPlay: true } }));
+    const coup = A.codeAction(act("single", "singles"));
+    const retrait = A.codeAction(act("strikeout", "strikes out"));
+    assert.equal(point.ton, A.TON_ACTION.point);
+    assert.equal(coup.ton, A.TON_ACTION.coup);
+    assert.equal(retrait.ton, A.TON_ACTION.retrait);
+    assert.notEqual(point.ton, coup.ton);
+  });
+
+  test("les cinq tons sont distincts", () => {
+    const t = Object.values(A.TON_ACTION);
+    assert.equal(new Set(t).size, t.length, "deux catégories partagent une couleur");
+  });
+
+  test("chaque code renvoyé existe au catalogue", () => {
+    for (const et of Object.keys(A.CATEGORIE)) {
+      const c = A.codeAction(act(et, "peu importe"));
+      if (c.concept) assert.ok(A.BY_ID[c.concept], `notion inconnue : ${c.concept}`);
+    }
+  });
+
+  test("un évènement inconnu ne casse rien", () => {
+    const c = A.codeAction(act("evenement_invente", "…"));
+    assert.equal(c.code, "—");
+    assert.ok(c.ton, "une couleur de repli est toujours fournie");
+    assert.doesNotThrow(() => A.codeAction({}));
+  });
+});
+
+describe("stabilité du déroulé", () => {
+  const act = (i, manche, demi, texte) => ({
+    result: { description: texte },
+    about: { atBatIndex: i, inning: manche, halfInning: demi },
+  });
+
+  /* Regression : les clés React reposaient sur l'index de position. Chaque
+     action insérée en tête décalait toutes les autres et React réutilisait
+     les mauvais nœuds — des lignes semblaient disparaître ou changer. */
+  test("chaque action porte un identifiant stable", () => {
+    const g = A.grouperParManche([act(0, 1, "top", "A"), act(1, 1, "top", "B")]);
+    for (const gr of g)
+      for (const a of gr.actions)
+        assert.ok(Number.isInteger(a.about.atBatIndex), "atBatIndex manquant");
+  });
+
+  test("l'identifiant survit à l'ajout d'une action", () => {
+    const avant = A.grouperParManche([act(0, 1, "top", "A"), act(1, 1, "top", "B")]);
+    const apres = A.grouperParManche([act(0, 1, "top", "A"), act(1, 1, "top", "B"), act(2, 1, "top", "C")]);
+    const idOf = (gr, texte) =>
+      gr.flatMap((x) => x.actions).find((a) => a.result.description === texte).about.atBatIndex;
+    assert.equal(idOf(avant, "A"), idOf(apres, "A"), "l'identifiant de A a bougé");
+    assert.equal(idOf(avant, "B"), idOf(apres, "B"), "l'identifiant de B a bougé");
+  });
+
+  test("le filtre demande bien atBatIndex", () => {
+    assert.ok(A.CHAMPS_HISTOIRE.includes("atBatIndex"));
+  });
+
+  /* Regression : tronquer par demi-manche faisait disparaître quatre ou cinq
+     lignes d'un coup au changement de manche. */
+  test("la troncature compte des actions, pas des manches", () => {
+    const g = A.grouperParManche([
+      act(0, 1, "top", "a"), act(1, 1, "top", "b"), act(2, 1, "top", "c"),
+      act(3, 1, "bottom", "d"), act(4, 1, "bottom", "e"),
+      act(5, 2, "top", "f"),
+    ]);
+    // Limite choisie pour tomber AU MILIEU d'une demi-manche : avec 3, la
+    // coupure coincidait avec une frontiere et le test ne discriminait rien.
+    for (const max of [1, 2, 4, 5]) {
+      const l = A.limiterActions(g, max);
+      const n = l.reduce((acc, x) => acc + x.actions.length, 0);
+      assert.equal(n, max, `limite ${max} : ${n} actions gardées`);
+    }
+  });
+
+  test("signale un groupe coupé en cours", () => {
+    const g = A.grouperParManche([
+      act(0, 1, "top", "a"), act(1, 1, "top", "b"), act(2, 1, "top", "c"),
+    ]);
+    const l = A.limiterActions(g, 2);
+    assert.equal(l[0].tronque, true, "un groupe partiel doit être marqué");
+    assert.equal(A.limiterActions(g, 3)[0].tronque, false);
+  });
+
+  test("la troncature garde les plus récentes", () => {
+    const g = A.grouperParManche([act(0, 1, "top", "vieille"), act(1, 2, "top", "recente")]);
+    const l = A.limiterActions(g, 1);
+    assert.equal(l[0].actions[0].result.description, "recente");
+  });
+
+  test("une limite large ne perd rien", () => {
+    const src = [act(0, 1, "top", "a"), act(1, 1, "top", "b")];
+    const g = A.grouperParManche(src);
+    assert.equal(A.limiterActions(g, 99).reduce((n, x) => n + x.actions.length, 0), src.length);
+  });
+
+  test("une limite nulle ne renvoie rien", () => {
+    const g = A.grouperParManche([act(0, 1, "top", "a")]);
+    assert.deepEqual(A.limiterActions(g, 0), []);
+  });
+});
+
+describe("entrées d'intendance dans le déroulé", () => {
+  /* Regression : une substitution occupe temporairement la place de l'action
+     en cours, puis l'API l'absorbe dans les playEvents du duel suivant. La
+     ligne apparaissait donc puis s'effaçait d'elle-même. */
+  const jeu = (eventType, texte) => ({
+    result: { eventType, description: texte },
+    about: { atBatIndex: 1, inning: 7, halfInning: "top" },
+  });
+
+  test("les changements de joueur sont écartés", () => {
+    for (const e of ["defensive_substitution", "offensive_substitution",
+                     "pitching_substitution", "defensive_switch"])
+      assert.ok(A.estIntendance(jeu(e, "…")), `${e} devrait être filtré`);
+  });
+
+  test("les avis et interruptions aussi", () => {
+    for (const e of ["game_advisory", "mound_visit", "batter_timeout", "injury", "ejection"])
+      assert.ok(A.estIntendance(jeu(e, "…")), `${e} devrait être filtré`);
+  });
+
+  test("les vraies actions passent", () => {
+    for (const e of ["single", "home_run", "strikeout", "field_out", "walk",
+                     "stolen_base_2b", "wild_pitch", "sac_fly", "balk"])
+      assert.ok(!A.estIntendance(jeu(e, "…")), `${e} ne doit pas être filtré`);
+  });
+
+  test("le déroulé n'en contient plus aucune", () => {
+    const g = A.grouperParManche([
+      jeu("single", "singles"),
+      jeu("defensive_substitution", "Defensive Substitution: X replaces Y"),
+      jeu("strikeout", "strikes out"),
+    ]);
+    const tout = g.flatMap((x) => x.actions);
+    assert.equal(tout.length, 2, "la substitution devrait avoir disparu");
+    assert.ok(!tout.some((a) => /Substitution/i.test(a.result.description)));
+  });
+
+  test("une action sans type ne casse rien", () => {
+    assert.equal(A.estIntendance({}), false);
+    assert.equal(A.estIntendance(null), false);
+  });
+});
+
+describe("classification de l'état d'un match", () => {
+  /* Regression : TOR@WSH a disparu du sélecteur au moment de finir. L'API
+     passe par un état « Game Over » (code O) entre le jeu et l'homologation ;
+     le filtre exigeait le code « F » et ce match n'était donc ni vif ni fini. */
+  const st = (abs, code) => ({ abstractGameState: abs, codedGameState: code });
+
+  test("Game Over compte comme terminé", () => {
+    const e = A.classerMatch(st("Final", "O"));
+    assert.equal(e.fini, true, "un match joué mais non homologué doit rester visible");
+    assert.equal(e.vif, false);
+    assert.equal(e.reporte, false);
+  });
+
+  test("Final homologué aussi", () => {
+    assert.equal(A.classerMatch(st("Final", "F")).fini, true);
+  });
+
+  test("un report n'est ni vif ni fini", () => {
+    const e = A.classerMatch(st("Final", "D"));
+    assert.equal(e.reporte, true);
+    assert.equal(e.fini, false, "un match jamais joué ne doit pas passer pour terminé");
+  });
+
+  test("l'échauffement se distingue du jeu lancé", () => {
+    const chauffe = A.classerMatch(st("Live", "P"));
+    const joue = A.classerMatch(st("Live", "I"));
+    assert.equal(chauffe.vif, true);
+    assert.equal(chauffe.echauffement, true);
+    assert.equal(joue.echauffement, false, "un match en cours n'est pas à l'échauffement");
+  });
+
+  test("un match à venir n'est rien de tout ça", () => {
+    for (const code of ["S", "P"]) {
+      const e = A.classerMatch(st("Preview", code));
+      assert.equal(e.vif, false);
+      assert.equal(e.fini, false);
+    }
+  });
+
+  /* Tout match doit tomber dans exactement une categorie exploitable :
+     c'est la garantie qu'aucun ne disparaisse entre les mailles. */
+  test("aucun état connu ne tombe entre les mailles", () => {
+    const connus = [
+      ["Live", "I"], ["Live", "P"], ["Final", "F"], ["Final", "O"],
+      ["Final", "D"], ["Preview", "S"], ["Preview", "P"],
+    ];
+    for (const [abs, code] of connus) {
+      const e = A.classerMatch(st(abs, code));
+      const classe = e.vif || e.fini || e.reporte || abs === "Preview";
+      assert.ok(classe, `${abs}/${code} n'est classé nulle part`);
+    }
+  });
+
+  test("tolère un statut absent", () => {
+    for (const s of [null, undefined, {}]) {
+      const e = A.classerMatch(s);
+      assert.equal(e.vif, false);
+      assert.equal(e.fini, false);
+    }
+  });
+});

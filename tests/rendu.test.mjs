@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import App, { VueNuits, VueAlmanach, VueTerrains, AffichesDuSoir, LienStade, BandeauSituation } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -223,5 +223,40 @@ describe("frise complète, recommandations ciblées", () => {
       rendre(React.createElement(VueNuits, {
         teams: [equipe], suivies: [], setSuivies: () => {}, bilans: bilan,
       })));
+  });
+});
+
+describe("vue Le direct", () => {
+  test("se rend sans données", () => {
+    assert.ok(rendre(React.createElement(VueDirect, { teams: [], suivies: [] })).length >= 0);
+  });
+
+  test("le losange allume les buts occupés", () => {
+    const vide = rendre(React.createElement(BasesOccupees, { off: {} }));
+    const pleines = rendre(React.createElement(BasesOccupees, { off: { first: {}, second: {}, third: {} } }));
+    const compte = (h) => (h.match(/#F2CE6B/g) || []).length;
+    assert.ok(compte(pleines) > compte(vide), "les bases pleines doivent s'allumer davantage");
+  });
+
+  test("les compteurs respectent leurs maximums", () => {
+    const html = rendre(React.createElement(Compteurs, { balles: 3, prises: 2, retraits: 2 }));
+    assert.match(html, /balles/);
+    assert.match(html, /prises/);
+    assert.match(html, /retraits/);
+  });
+
+  test("le tableau par manche affiche R, H et E", () => {
+    const html = rendre(React.createElement(TableauManches, {
+      innings: [{ num: 1, home: { runs: 0 }, away: { runs: 1 } }, { num: 2, home: { runs: 2 }, away: { runs: 0 } }],
+      teams: { home: { runs: 2, hits: 5, errors: 1 }, away: { runs: 1, hits: 3, errors: 0 } },
+      ab: { ext: "PHI", dom: "MIA" },
+    }));
+    assert.match(html, /PHI/);
+    assert.match(html, /MIA/);
+    for (const k of ["R", "H", "E"]) assert.match(html, new RegExp(`>${k}<`));
+  });
+
+  test("ne casse pas sur un tableau de manches absent", () => {
+    assert.equal(rendre(React.createElement(TableauManches, { innings: [], teams: {}, ab: {} })), "");
   });
 });

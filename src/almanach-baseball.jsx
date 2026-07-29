@@ -702,7 +702,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
       // match termine et "D" pour un report.
       const finis = (sch.dates || [])
         .flatMap((d) => d.games || [])
-        .filter((g) => g.status?.codedGameState === "F")
+        .filter((g) => classerMatch(g.status).fini)
         .sort((a, b) => new Date(b.gameDate) - new Date(a.gameDate));
 
       if (!finis.length) {
@@ -3483,6 +3483,673 @@ function Ligne({ k, v }) {
   );
 }
 
+
+/* ================================================================== *
+ *  VUE « LE DIRECT »
+ *  Un seul appel filtre suffit : feed/live passe de 625 Ko a 1,6 Ko en
+ *  ne demandant que les champs utiles, et ramene manche, score, compte,
+ *  coureurs, duel en cours, detail manche par manche et dernier fait de
+ *  jeu. contextMetrics ajoute la probabilite de victoire pour 2 Ko.
+ *  Rafraichissement toutes les 15 secondes : au baseball, un lancer
+ *  toutes les vingt secondes environ.
+ * ================================================================== */
+const CHAMPS_DIRECT = [
+  "liveData", "plays", "currentPlay", "result", "description", "linescore",
+  "currentInning", "currentInningOrdinal", "inningState", "balls", "strikes", "outs",
+  "teams", "home", "away", "runs", "hits", "errors", "innings", "num", "ordinalNum",
+  "offense", "defense", "first", "second", "third", "batter", "pitcher", "onDeck",
+  "fullName", "id", "gameData", "status", "abstractGameState", "detailedState",
+].join(",");
+
+const CADENCE_DIRECT = 15000;
+
+/* ---------------------------------------------------------------- *
+ *  ETAT D'UN MATCH
+ *  L'API distingue plus de cas qu'il n'y parait :
+ *    Live  | I | In Progress   le jeu est lance
+ *    Live  | P | Warmup        echauffement, rien n'a commence
+ *    Final | F | Final         homologue
+ *    Final | O | Game Over     joue, en attente d'homologation
+ *    Final | D | Postponed     reporte, jamais joue
+ *  Se fier au seul code « F » faisait disparaitre les matchs en « Game
+ *  Over » : ni vivants ni finis, ils tombaient entre les mailles.
+ * ---------------------------------------------------------------- */
+function classerMatch(status) {
+  const abs = status?.abstractGameState;
+  const code = status?.codedGameState;
+  const reporte = code === "D";
+  return {
+    reporte,
+    echauffement: abs === "Live" && code === "P",
+    vif: abs === "Live",
+    fini: abs === "Final" && !reporte,
+  };
+}
+
+/* L'historique complet du match. Filtre, il tombe de 677 Ko a 12 Ko pour
+   soixante-dix actions. On le rafraichit plus lentement que l'etat courant :
+   une action toutes les deux ou trois minutes en moyenne, 45 secondes suffisent. */
+const CHAMPS_HISTOIRE = [
+  "liveData", "plays", "allPlays", "result", "description", "eventType", "isScoringPlay",
+  // atBatIndex est l'identifiant stable de chaque action. Sans lui, les cles
+  // React reposaient sur l'index de position : chaque nouvelle action inseree
+  // en tete decalait toutes les autres, et React reutilisait les mauvais
+  // noeuds — d'ou des lignes qui semblaient disparaitre ou changer.
+  "atBatIndex", "about", "inning", "halfInning", "isComplete", "playEvents", "type", "details",
+].join(",");
+
+/* Chaque action recoit le code du marqueur — celui-la meme que le carnet
+   enseigne. Plus precis qu'un pictogramme, et il ne cree pas un second
+   langage a apprendre. La couleur donne le balayage rapide, le code la
+   precision. On reutilise les tables de correspondance de la detection. */
+const TON_ACTION = {
+  point: T.sodium,   // a produit un point
+  coup: T.clay,      // coup sur
+  cadeau: T.chalk,   // but offert : balles, atteint, interference
+  course: "#8FB3C9",  // jeu de coureurs
+  retrait: T.dim,    // tout le reste
+};
+
+const CATEGORIE = {
+  single: "coup", double: "coup", triple: "coup", home_run: "coup", grand_slam: "coup",
+  walk: "cadeau", intent_walk: "cadeau", hit_by_pitch: "cadeau", catcher_interf: "cadeau",
+  field_error: "cadeau", fielders_choice: "cadeau",
+  stolen_base_2b: "course", stolen_base_3b: "course", stolen_base_home: "course",
+  caught_stealing: "course", pickoff: "course", balk: "course",
+  wild_pitch: "course", passed_ball: "course", defensive_indiff: "course",
+};
+
+/* Renvoie le code du marqueur et sa couleur pour une action du deroule. */
+function codeAction(a) {
+  const et = a?.result?.eventType;
+  let id = null;
+  if (et === "field_out") id = classifyFieldOut(a.result.description);
+  else if (AT_BAT_MAP[et]) id = AT_BAT_MAP[et];
+  else {
+    for (const ev of a?.playEvents || []) {
+      const x = ev?.type === "action" && ACTION_MAP[ev?.details?.eventType];
+      if (x) { id = x; break; }
+    }
+  }
+  if (et === "home_run" && (a.result.rbi || 0) >= 4) id = "grand_slam";
+  const c = id && BY_ID[id];
+  const cat = a?.about?.isScoringPlay ? "point" : (CATEGORIE[id] || "retrait");
+  return { code: c ? c.code : "—", titre: c ? c.titre : "", ton: TON_ACTION[cat], concept: id };
+}
+const CADENCE_HISTOIRE = 45000;
+
+/* Les entrees d'intendance — changements de joueur, visites au monticule,
+   avis divers — ne sont pas des actions de jeu. Surtout, l'API les fait
+   TRANSITER : elles occupent la place de l'action en cours, puis sont
+   absorbees dans les playEvents du duel suivant et disparaissent de la liste.
+   Une ligne apparaissait donc puis s'effacait toute seule. */
+const INTENDANCE = /substitution|switch|advisory|visit|timeout|injury|ejection/i;
+const estIntendance = (a) => INTENDANCE.test(a?.result?.eventType || "");
+
+/* Regroupe les actions par demi-manche, la plus recente en tete. */
+function grouperParManche(actions = []) {
+  const groupes = [];
+  for (const a of actions) {
+    if (!a?.result?.description) continue;
+    if (estIntendance(a)) continue;
+    const cle = `${a.about?.inning}-${a.about?.halfInning}`;
+    const dernier = groupes[groupes.length - 1];
+    if (dernier && dernier.cle === cle) dernier.actions.push(a);
+    else groupes.push({ cle, manche: a.about?.inning, demi: a.about?.halfInning, actions: [a] });
+  }
+  return groupes.reverse().map((g) => ({ ...g, actions: g.actions.slice().reverse() }));
+}
+
+/* Tronque a un nombre d'ACTIONS, pas de demi-manches. Couper par manche
+   faisait disparaitre quatre ou cinq lignes d'un coup au changement de
+   manche ; en coupant par action, la liste se decale d'une ligne a la fois. */
+function limiterActions(groupes, max) {
+  const out = [];
+  let reste = max;
+  for (const g of groupes) {
+    if (reste <= 0) break;
+    const gardees = g.actions.slice(0, reste);
+    reste -= gardees.length;
+    out.push({ ...g, actions: gardees, tronque: gardees.length < g.actions.length });
+  }
+  return out;
+}
+
+const ACTIONS_VISIBLES = 12;
+
+/* Le losange du direct : les buts occupes s'allument. C'est l'affichage
+   canonique de tous les tableaux de stade. */
+function BasesOccupees({ off, taille = 76 }) {
+  const c = taille / 2, r = taille * 0.3, s = taille * 0.11;
+  const buts = [
+    [c + r, c, !!off?.first],
+    [c, c - r, !!off?.second],
+    [c - r, c, !!off?.third],
+  ];
+  return (
+    <svg width={taille} height={taille} viewBox={`0 0 ${taille} ${taille}`} aria-hidden="true">
+      {buts.map(([x, y, occupe], i) => (
+        <rect
+          key={i} x={x - s / 2} y={y - s / 2} width={s} height={s}
+          transform={`rotate(45 ${x} ${y})`}
+          fill={occupe ? T.sodium : "transparent"}
+          stroke={occupe ? T.sodium : "rgba(147,166,151,.5)"}
+          strokeWidth="1.6"
+        />
+      ))}
+      <rect
+        x={c - s / 2.6} y={c + r - s / 2.6} width={s / 1.3} height={s / 1.3}
+        transform={`rotate(45 ${c} ${c + r})`}
+        fill="rgba(147,166,151,.4)"
+      />
+    </svg>
+  );
+}
+
+/* Retraits et compte, comme sur un tableau d'affichage. */
+function Compteurs({ balles, prises, retraits }) {
+  const pastille = (plein, couleur) => (
+    <span
+      style={{
+        width: 9, height: 9, borderRadius: "50%", display: "inline-block",
+        background: plein ? couleur : "transparent",
+        border: `1px solid ${plein ? couleur : "rgba(147,166,151,.45)"}`,
+      }}
+    />
+  );
+  const ligne = (lib, n, total, couleur) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {/* Largeur calee sur le plus long libelle — « retraits », huit
+          caracteres — sinon il deborde sur les pastilles. Aligne a droite
+          pour que les trois rangees soient a la meme distance des points. */}
+      <span
+        style={{
+          fontFamily: FF_MONO, fontSize: 9, color: T.dim,
+          width: 48, flexShrink: 0, textAlign: "right", whiteSpace: "nowrap",
+        }}
+      >
+        {lib}
+      </span>
+      {Array.from({ length: total }, (_, i) => (
+        <React.Fragment key={i}>{pastille(i < (n || 0), couleur)}</React.Fragment>
+      ))}
+    </div>
+  );
+  return (
+    <div style={{ display: "grid", gap: 5 }}>
+      {ligne("balles", balles, 3, T.chalk)}
+      {ligne("prises", prises, 2, T.clay)}
+      {ligne("retraits", retraits, 2, T.sodium)}
+    </div>
+  );
+}
+
+/* Le tableau R-H-E manche par manche. */
+function TableauManches({ innings, teams, ab }) {
+  if (!innings?.length) return null;
+  const cell = { padding: "2px 6px", fontFamily: FF_MONO, fontSize: 10.5, textAlign: "center" };
+  const ligne = (cote, nom) => (
+    <tr>
+      <td style={{ ...cell, textAlign: "left", color: T.chalk }}>{nom}</td>
+      {innings.map((m) => (
+        <td key={m.num} style={{ ...cell, color: T.dim }}>
+          {m[cote]?.runs ?? "-"}
+        </td>
+      ))}
+      {["runs", "hits", "errors"].map((k) => (
+        <td key={k} style={{ ...cell, color: T.chalk, fontWeight: 700 }}>
+          {teams?.[cote]?.[k] ?? 0}
+        </td>
+      ))}
+    </tr>
+  );
+  return (
+    <div style={{ overflowX: "auto", marginTop: 14 }}>
+      <table style={{ borderCollapse: "collapse", minWidth: "100%" }}>
+        <thead>
+          <tr>
+            <th style={{ ...cell, textAlign: "left", color: T.dim }} />
+            {innings.map((m) => (
+              <th key={m.num} style={{ ...cell, color: T.dim }}>{m.num}</th>
+            ))}
+            {["R", "H", "E"].map((k) => (
+              <th key={k} style={{ ...cell, color: T.sodium }}>{k}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {ligne("away", ab.ext)}
+          {ligne("home", ab.dom)}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function VueDirect({ teams, suivies = [] }) {
+  const [enCours, setEnCours] = useState([]);
+  const [choisi, setChoisi] = useState(null);
+  const [etat, setEtat] = useState(null);
+  const [proba, setProba] = useState(null);
+  const [phase, setPhase] = useState("load");
+  const [spoilers, setSpoilers] = useState(false);
+  const [histoire, setHistoire] = useState([]);
+  const [toutVoir, setToutVoir] = useState(false);
+
+  const parId = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
+
+  /* La liste des matchs en cours, rafraichie a la meme cadence : un match
+     peut commencer ou se terminer pendant qu'on regarde. */
+  useEffect(() => {
+    let annule = false;
+    const tirer = () => {
+      const iso = new Date().toISOString().slice(0, 10);
+      const veille = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+      fetch(`${API}/schedule?sportId=1&startDate=${veille}&endDate=${iso}&hydrate=team`)
+        .then((r) => r.json())
+        .then((d) => {
+          if (annule) return;
+          // On garde les matchs en cours ET ceux de la nuit ecoulee : le cas
+          // le plus frequent depuis la France est de se lever apres coup.
+          const n = new Date();
+          const h = Number(
+            new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(n)
+          );
+          const jour = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
+          const nuit = h < AUBE ? decalerJour(jour, -1) : jour;
+
+          const l = (d.dates || [])
+            .flatMap((x) => x.games || [])
+            .filter((g) => {
+              const e = classerMatch(g.status);
+              if (e.reporte || (!e.vif && !e.fini)) return false;
+              return e.vif || nuitDe(g.gameDate).jour === nuit;
+            })
+            .map((g) => {
+              const e = classerMatch(g.status);
+              return {
+                id: g.gamePk,
+                idExt: g.teams.away.team.id,
+                idDom: g.teams.home.team.id,
+                ext: g.teams.away.team.abbreviation,
+                dom: g.teams.home.team.abbreviation,
+                stade: g.venue?.name,
+                fini: e.fini,
+                echauffement: e.echauffement,
+                debut: g.gameDate,
+              };
+            })
+            // Les matchs en cours d'abord, puis les plus recemment termines.
+            .sort((a, b) =>
+              a.fini !== b.fini ? (a.fini ? 1 : -1) : new Date(b.debut) - new Date(a.debut)
+            );
+          setEnCours(l);
+          setPhase("ok");
+        })
+        .catch(() => !annule && setPhase("erreur"));
+    };
+    tirer();
+    const id = setInterval(tirer, CADENCE_DIRECT * 4);
+    return () => {
+      annule = true;
+      clearInterval(id);
+    };
+  }, []);
+
+  /* Le match suivi. Un appel filtre a 1,6 Ko, plus 2 Ko de probabilite. */
+  useEffect(() => {
+    if (!choisi) return;
+    let annule = false;
+    const tirer = () => {
+      Promise.all([
+        fetch(`https://statsapi.mlb.com/api/v1.1/game/${choisi}/feed/live?fields=${CHAMPS_DIRECT}`).then((r) => r.json()),
+        fetch(`${API}/game/${choisi}/contextMetrics`).then((r) => r.json()).catch(() => null),
+      ])
+        .then(([f, c]) => {
+          if (annule) return;
+          setEtat({
+            l: f?.liveData?.linescore || null,
+            fait: f?.liveData?.plays?.currentPlay?.result?.description || null,
+            statut: f?.gameData?.status?.detailedState || null,
+          });
+          setProba(c?.homeWinProbability ?? null);
+        })
+        .catch(() => {});
+    };
+    tirer();
+    // Inutile de sonder un match termine : son etat ne bougera plus.
+    const fini = enCours.find((g) => g.id === choisi)?.fini;
+    const id = fini ? null : setInterval(tirer, CADENCE_DIRECT);
+    return () => {
+      annule = true;
+      if (id) clearInterval(id);
+    };
+  }, [choisi, enCours]);
+
+  /* Charge seulement si le deroule est demande : il revele tout le match. */
+  useEffect(() => {
+    if (!choisi || !spoilers) return;
+    let annule = false;
+    const tirer = () =>
+      fetch(`https://statsapi.mlb.com/api/v1.1/game/${choisi}/feed/live?fields=${CHAMPS_HISTOIRE}`)
+        .then((r) => r.json())
+        .then((d) => !annule && setHistoire(d?.liveData?.plays?.allPlays || []))
+        .catch(() => {});
+    tirer();
+    const id = setInterval(tirer, CADENCE_HISTOIRE);
+    return () => {
+      annule = true;
+      clearInterval(id);
+    };
+  }, [choisi, spoilers]);
+
+  useEffect(() => {
+    setHistoire([]);
+    setToutVoir(false);
+  }, [choisi]);
+
+  const groupes = useMemo(() => grouperParManche(histoire), [histoire]);
+  const totalActions = useMemo(
+    () => groupes.reduce((n, g) => n + g.actions.length, 0),
+    [groupes]
+  );
+
+  const jeu = enCours.find((g) => g.id === choisi) || null;
+  const L = etat?.l;
+
+  return (
+    <div className="alm-rise">
+      {phase === "load" && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
+          Recherche des matchs en cours…
+        </p>
+      )}
+
+      {phase === "ok" && !enCours.length && (
+        <p style={{ fontSize: 16 }}>
+          Aucun match en cours. La ligue joue surtout entre minuit et 6 h, heure de Paris — reviens
+          plus tard, ou consulte le programme pour savoir quand.
+        </p>
+      )}
+
+      {phase === "ok" && enCours.length > 0 && (
+        <>
+          <div
+            style={{
+              fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
+              color: T.sodium, marginBottom: 8,
+            }}
+          >
+            {(() => {
+              const vifs = enCours.filter((g) => !g.fini && !g.echauffement).length;
+              const finis = enCours.length - vifs;
+              if (vifs && finis) return `${vifs} EN COURS · ${finis} TERMINÉ${finis > 1 ? "S" : ""} CETTE NUIT`;
+              if (vifs) return `${vifs} MATCH${vifs > 1 ? "S" : ""} EN COURS`;
+              return `${finis} MATCH${finis > 1 ? "S" : ""} TERMINÉ${finis > 1 ? "S" : ""} CETTE NUIT`;
+            })()}
+          </div>
+
+          <div
+            style={{
+              display: "grid", gap: 6, marginBottom: 20,
+              gridTemplateColumns: "repeat(auto-fill, minmax(146px, 1fr))",
+            }}
+          >
+            {enCours.map((g) => {
+              const suivi = suivies.includes(g.idExt) || suivies.includes(g.idDom) || !suivies.length;
+              const sel = choisi === g.id;
+              return (
+                <button
+                  key={g.id}
+                  className="alm-cell"
+                  onClick={() => setChoisi(sel ? null : g.id)}
+                  style={{
+                    all: "unset", cursor: "pointer", display: "flex", alignItems: "center",
+                    gap: 6, boxSizing: "border-box", padding: "8px 10px", borderRadius: 2,
+                    background: sel ? "rgba(194,96,58,.22)" : "rgba(11,36,26,.5)",
+                    border: `1px solid ${sel ? T.chalk : suivi ? T.clay : "rgba(239,243,234,.18)"}`,
+                    // Un match en cours reste a pleine opacite, meme hors de tes
+                    // equipes : dans cet onglet, le fait qu'il se joue prime sur
+                    // le fait que tu le suives. On n'estompe que les matchs finis.
+                    opacity: !g.fini || suivi ? 1 : 0.6,
+                    // Les marqueurs d'etat sont poses hors du flux : dans le flux,
+                    // ils volaient la largeur et renvoyaient « AZ @ PIT » a la ligne.
+                    position: "relative", overflow: "hidden",
+                  }}
+                >
+                  <Img src={CAP(g.idExt)} alt="" size={20} />
+                  <Img src={CAP(g.idDom)} alt="" size={20} />
+                  <span
+                    style={{
+                      fontFamily: FF_MONO, fontSize: 11, color: T.chalk,
+                      whiteSpace: "nowrap", position: "relative",
+                    }}
+                  >
+                    {g.ext} @ {g.dom}
+                  </span>
+                  {g.fini ? (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute", right: -10, top: "50%",
+                        transform: "translateY(-50%) rotate(-24deg)",
+                        transformOrigin: "center",
+                        fontFamily: FF_MONO, fontSize: 15, fontWeight: 700,
+                        letterSpacing: ".22em", color: "rgba(147,166,151,.28)",
+                        pointerEvents: "none", whiteSpace: "nowrap",
+                      }}
+                    >
+                      FINI
+                    </span>
+                  ) : g.echauffement ? (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute", right: -6, top: "50%",
+                        transform: "translateY(-50%) rotate(-24deg)",
+                        fontFamily: FF_MONO, fontSize: 10, fontWeight: 700,
+                        letterSpacing: ".16em", color: "rgba(242,206,107,.3)",
+                        pointerEvents: "none", whiteSpace: "nowrap",
+                      }}
+                    >
+                      ÉCHAUFFEMENT
+                    </span>
+                  ) : (
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute", top: 6, right: 6, width: 7, height: 7,
+                        borderRadius: "50%", background: T.sodium,
+                        animation: "pulse 1.6s infinite", pointerEvents: "none",
+                      }}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {jeu && L && (
+        <div
+          className="alm-rise"
+          style={{
+            background: "rgba(11,36,26,.85)", border: `1px solid ${T.sodium}`,
+            borderRadius: 3, padding: "16px 18px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+            <Img src={CAP(jeu.idExt)} alt="" size={30} />
+            <span style={{ fontFamily: FF_DISPLAY, fontSize: 24, textTransform: "uppercase" }}>
+              {parId[jeu.idExt]?.name || jeu.ext}
+            </span>
+            <span style={{ color: T.dim }}>@</span>
+            <Img src={CAP(jeu.idDom)} alt="" size={30} />
+            <span style={{ fontFamily: FF_DISPLAY, fontSize: 24, textTransform: "uppercase" }}>
+              {parId[jeu.idDom]?.name || jeu.dom}
+            </span>
+            <span
+              style={{
+                marginLeft: "auto", fontFamily: FF_MONO, fontSize: 11,
+                color: jeu.fini ? T.dim : T.sodium, letterSpacing: ".1em",
+              }}
+            >
+              {jeu.fini
+                ? `TERMINÉ · ${L.currentInningOrdinal || ""} manches`
+                : `${L.currentInningOrdinal} ${L.inningState === "Top" ? "▲" : L.inningState === "Bottom" ? "▼" : ""}`}
+            </span>
+          </div>
+
+          {!jeu.fini && (
+          <div style={{ display: "flex", gap: 22, flexWrap: "wrap", alignItems: "center" }}>
+            <BasesOccupees off={L.offense} />
+            <Compteurs balles={L.balls} prises={L.strikes} retraits={L.outs} />
+
+            <div style={{ fontFamily: FF_MONO, fontSize: 11, display: "grid", gap: 4, minWidth: 0 }}>
+              <div>
+                <span style={{ color: T.dim }}>au bâton </span>
+                <span style={{ color: T.chalk }}>{L.offense?.batter?.fullName || "—"}</span>
+              </div>
+              <div>
+                <span style={{ color: T.dim }}>au monticule </span>
+                <span style={{ color: T.chalk }}>{L.defense?.pitcher?.fullName || "—"}</span>
+              </div>
+              {L.offense?.onDeck?.fullName && (
+                <div>
+                  <span style={{ color: T.dim }}>à suivre </span>
+                  <span style={{ color: T.chalk }}>{L.offense.onDeck.fullName}</span>
+                </div>
+              )}
+            </div>
+
+            {/* Sur un match termine, cette probabilite vaut 0 ou 100 : elle
+                annoncerait le vainqueur. */}
+            {proba != null && !jeu.fini && (
+              <div style={{ marginLeft: "auto", textAlign: "right", fontFamily: FF_MONO }}>
+                <div style={{ fontSize: 22, color: T.sodium, fontWeight: 700 }}>{Math.round(proba)} %</div>
+                <div style={{ fontSize: 9, color: T.dim, letterSpacing: ".08em" }}>
+                  POUR {jeu.dom}
+                </div>
+              </div>
+            )}
+          </div>
+          )}
+
+          {etat.fait && !jeu.fini && (
+            <p style={{ fontSize: 14.5, lineHeight: 1.5, margin: "16px 0 0", color: "rgba(239,243,234,.9)" }}>
+              {etat.fait}
+            </p>
+          )}
+
+          {jeu.fini && !spoilers && (
+            <p style={{ fontSize: 14.5, lineHeight: 1.5, margin: "4px 0 0", color: "rgba(239,243,234,.8)" }}>
+              Ce match est joué. Rien n'est révélé tant que tu ne le demandes pas.
+            </p>
+          )}
+
+          {spoilers ? (
+            <>
+              <TableauManches innings={L.innings} teams={L.teams} ab={{ ext: jeu.ext, dom: jeu.dom }} />
+
+              {groupes.length > 0 && (
+                <div style={{ marginTop: 18 }}>
+                  <div
+                    style={{
+                      fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
+                      color: T.sodium, marginBottom: 8,
+                    }}
+                  >
+                    DÉROULÉ DU MATCH
+                  </div>
+
+                  {(toutVoir ? groupes : limiterActions(groupes, ACTIONS_VISIBLES)).map((g) => (
+                    <div key={g.cle} style={{ marginBottom: 12 }}>
+                      <div
+                        style={{
+                          fontFamily: FF_MONO, fontSize: 10, color: T.dim,
+                          letterSpacing: ".08em", marginBottom: 4,
+                        }}
+                      >
+                        {ordinal(g.manche)} MANCHE · {g.demi === "top" ? "HAUT" : "BAS"}
+                      </div>
+                      <div style={{ display: "grid", gap: 4 }}>
+                        {g.actions.map((a, i) => {
+                          const c = codeAction(a);
+                          return (
+                            <div
+                              key={a.about?.atBatIndex ?? `${g.cle}-${i}`}
+                              style={{ display: "flex", gap: 9, alignItems: "baseline" }}
+                            >
+                              <span
+                                title={c.titre}
+                                style={{
+                                  fontFamily: FF_MONO, fontSize: 10, fontWeight: 700,
+                                  color: c.ton, flexShrink: 0, width: 42, textAlign: "right",
+                                  cursor: c.titre ? "help" : "default",
+                                }}
+                              >
+                                {c.code}
+                              </span>
+                              <p
+                                style={{
+                                  margin: 0, fontSize: 13.5, lineHeight: 1.45, paddingLeft: 9,
+                                  borderLeft: `2px solid ${a.about?.isScoringPlay ? T.sodium : "rgba(147,166,151,.22)"}`,
+                                  color: a.about?.isScoringPlay ? T.chalk : "rgba(239,243,234,.72)",
+                                }}
+                              >
+                                {a.result.description}
+                              </p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+
+                  <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, margin: "0 0 10px" }}>
+                    Codes du carnet de marque. Jaune : point marqué. Terre battue : coup sûr.
+                    Blanc : but offert. Bleu : jeu de coureurs. Gris : retrait.
+                  </p>
+
+                  {totalActions > ACTIONS_VISIBLES && (
+                    <button
+                      onClick={() => setToutVoir(!toutVoir)}
+                      style={{
+                        all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 10.5,
+                        color: T.clay, borderBottom: "1px solid currentColor",
+                      }}
+                    >
+                      {toutVoir
+                        ? `ne montrer que les ${ACTIONS_VISIBLES} dernières actions`
+                        : `tout le déroulé — ${totalActions} actions sur ${groupes.length} demi-manches`}
+                    </button>
+                  )}
+                </div>
+              )}
+            </>
+          ) : (
+            <button
+              onClick={() => setSpoilers(true)}
+              style={{
+                all: "unset", cursor: "pointer", marginTop: 14, fontFamily: FF_MONO,
+                fontSize: 10.5, color: T.clay, borderBottom: "1px solid currentColor",
+              }}
+            >
+              afficher le score, le détail par manche et le déroulé
+            </button>
+          )}
+
+          <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, marginTop: 14 }}>
+            {etat.statut}
+            {jeu.fini ? "" : ` · mise à jour toutes les ${CADENCE_DIRECT / 1000} secondes`}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
@@ -3497,8 +4164,9 @@ const ALIAS = {
   programme: "nuits", nuits: "nuits", calendrier: "nuits",
   carnet: "carnet", almanach: "carnet", notions: "carnet",
   terrains: "terrains", stades: "terrains", parcs: "terrains", carte: "terrains",
+  direct: "direct", live: "direct", "en-cours": "direct",
 };
-const FRAGMENT = { nuits: "programme", carnet: "carnet", terrains: "terrains" };
+const FRAGMENT = { nuits: "programme", carnet: "carnet", terrains: "terrains", direct: "direct" };
 
 function ongletDepuisFragment(brut) {
   const h = String(brut || "").replace(/^#\/?/, "").trim().toLowerCase().split("/")[0];
@@ -3750,9 +4418,12 @@ export default function App() {
           <Onglet id="carnet">Le carnet</Onglet>
           <Onglet id="nuits">Le programme</Onglet>
           <Onglet id="terrains">Les terrains</Onglet>
+          <Onglet id="direct">Le direct</Onglet>
         </nav>
 
-        {onglet === "terrains" ? (
+        {onglet === "direct" ? (
+          <VueDirect teams={teams} suivies={suivies} />
+        ) : onglet === "terrains" ? (
           <VueTerrains
             teams={teams}
             stades={stades}
@@ -3827,6 +4498,9 @@ export {
   VueTerrains, projeter, enM, CONTOUR_US, CARTE_L, CARTE_H,
   cibleDepuisFragment, AffichesDuSoir, LienStade, enPi, distancesCloture, BandeauSituation,
   WIKI_STADES, lienWiki,
+  VueDirect, BasesOccupees, Compteurs, TableauManches, CHAMPS_DIRECT, CADENCE_DIRECT, classerMatch,
+  CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
+  estIntendance, INTENDANCE,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
