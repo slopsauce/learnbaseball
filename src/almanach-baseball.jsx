@@ -1421,7 +1421,7 @@ function indiceEnvie(m, bilans) {
 }
 
 /* Formule la raison principale, en clair. */
-function raisonEnvie(m, bilans, stades = {}, stadeHabituel = {}) {
+function raisonEnvie(m, bilans, stades = {}, stadeHabituel = {}, spoilers = false) {
   const r = [];
   // L'heure figure desormais en tete de carte, avec l'etiquette EN SOIREE :
   // inutile de la redire ici. On ne garde le qualificatif que pour la tranche
@@ -1432,11 +1432,16 @@ function raisonEnvie(m, bilans, stades = {}, stadeHabituel = {}) {
   // « dernier match de la série » — un match sur trois — mange la place.
   if (m.neutre && m.stade) r.push(`à ${m.stade}`);
 
-  for (const id of [m.idExt, m.idDom]) {
-    const s = libelleSerie(bilans[id]);
-    if (s && s.remarquable) {
-      r.push(`${id === m.idDom ? m.dom : m.ext} sur ${s.texte}`);
-      break;
+  // Une serie en cours revele le resultat de la nuit derniere : « sur 4
+  // victoires » dit qu'ils ont gagne hier. On la tait tant que les resultats
+  // sont masques.
+  if (spoilers) {
+    for (const id of [m.idExt, m.idDom]) {
+      const s = libelleSerie(bilans[id]);
+      if (s && s.remarquable) {
+        r.push(`${id === m.idDom ? m.dom : m.ext} sur ${s.texte}`);
+        break;
+      }
     }
   }
 
@@ -1670,6 +1675,33 @@ function anecdote(m, stades, stadeHabituel) {
   return cand[m.id % Math.min(cand.length, 2)];
 }
 
+/* Le nom d'un stade renvoie vers sa fiche dans l'onglet Terrains. On passe
+   par le fragment d'URL plutot que par un etat partage : le lien reste
+   partageable et le bouton « precedent » du navigateur fonctionne seul.
+   Composant unique, utilise par le bandeau du jour et le panneau de detail. */
+function LienStade({ idStade, nom, style }) {
+  if (!nom) return null;
+  if (!idStade) return <span style={style}>{nom}</span>;
+  return (
+    <button
+      onClick={() => {
+        try {
+          if (typeof window !== "undefined") window.location.hash = `terrains/${idStade}`;
+        } catch {
+          /* contexte restreint */
+        }
+      }}
+      title={`Voir ${nom} sur la carte des terrains`}
+      style={{
+        all: "unset", cursor: "pointer", color: T.chalk,
+        borderBottom: `1px solid ${T.clay}`, ...style,
+      }}
+    >
+      {nom}
+    </button>
+  );
+}
+
 /* Panneau de detail : remplace l'infobulle, inutilisable au toucher.
    Il s'ouvre sous la nuit concernee pour rester dans son contexte. */
 function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif, resumes }) {
@@ -1715,7 +1747,17 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
 
       <div style={{ display: "grid", gap: 3 }}>
         {ligne("heure", `${m.hhmm} à Paris`)}
-        {ligne("stade", m.stade + (s?.ville ? ` · ${s.ville}` : "") + (m.neutre ? "  ◆ terrain neutre" : ""))}
+        {/* Le stade renvoie vers sa fiche dans l'onglet Terrains. On passe par
+            le fragment plutot que par un etat partage : le lien reste
+            partageable et le bouton « precedent » fonctionne tout seul. */}
+        <div style={{ display: "flex", gap: 8, fontSize: 11.5, flexWrap: "wrap" }}>
+          <span style={{ color: T.dim, minWidth: 74, flexShrink: 0 }}>stade</span>
+          <span style={{ minWidth: 0 }}>
+            <LienStade idStade={m.idStade} nom={m.stade} />
+            {s?.ville ? <span style={{ color: T.chalk }}> · {s.ville}</span> : null}
+            {m.neutre ? <span style={{ color: T.sodium }}>  ◆ terrain neutre</span> : null}
+          </span>
+        </div>
         {ligne("série", m.matchSerie && m.totalSerie ? `match ${m.matchSerie} sur ${m.totalSerie}` : null)}
         {ligne("division", m.derby ? "derby : les deux équipes du même groupe" : null)}
         {ligne(
@@ -2024,6 +2066,114 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert
         </div>
       )}
     </button>
+  );
+}
+
+/* Bilan, serie, retard et nombre magique derivent tous du classement, donc du
+   resultat de la nuit precedente : « sur 4 victoires » dit qu'ils ont gagne
+   hier. Le bandeau entier est un spoiler et ne s'affiche que sur demande.
+   Compose a part pour etre testable : au rendu serveur les effets ne tournent
+   pas, donc VueNuits reste en phase de chargement et ne montrerait jamais rien. */
+function BandeauSituation({ situation, spoilers, onAfficher }) {
+  if (!situation?.length) return null;
+
+  if (!spoilers) {
+    return (
+      <button
+        onClick={onAfficher}
+        style={{
+          all: "unset", cursor: "pointer", display: "block", width: "100%",
+          boxSizing: "border-box", marginBottom: 22, padding: "10px 14px",
+          border: "1px dashed rgba(239,243,234,.28)", borderRadius: 3,
+          fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, lineHeight: 1.6,
+        }}
+      >
+        <span style={{ color: T.sodium, letterSpacing: ".18em" }}>LA SITUATION</span>
+        {" — masquée : bilans, séries et nombre magique révèlent la nuit dernière."}
+        <br />
+        <span style={{ color: T.clay, borderBottom: "1px solid currentColor" }}>
+          afficher quand même
+        </span>
+      </button>
+    );
+  }
+
+  return (
+<div style={{ marginBottom: 22 }}>
+        <div
+          style={{
+            fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
+            color: T.sodium, marginBottom: 8,
+          }}
+        >
+          LA SITUATION
+        </div>
+        <div style={{ display: "grid", gap: 6 }}>
+          {situation.map(({ eq, b }) => {
+            const s = libelleSerie(b);
+            return (
+              <div
+                key={eq.id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap",
+                  background: "rgba(11,36,26,.5)", borderRadius: 3, padding: "7px 11px",
+                  fontFamily: FF_MONO, fontSize: 11,
+                }}
+              >
+                <Img src={CAP(eq.id)} alt="" size={22} />
+                <span style={{ color: T.chalk }}>{eq.abbreviation}</span>
+                <span style={{ color: T.chalk, fontWeight: 700 }}>
+                  {b.v}-{b.d}
+                </span>
+                <span style={{ color: T.dim }}>
+                  {RANG_FR(b.rang)} {DIVISION_FR(eq.division?.name || "")}
+                  {b.retard ? ` · à ${b.retard.toFixed(1)}` : ""}
+                  {b.wc != null && !b.meneur
+                    ? ` · wild card ${b.wc <= 0 ? `+${Math.abs(b.wc).toFixed(1)}` : b.wc.toFixed(1)}`
+                    : ""}
+                </span>
+                {s && (
+                  <Glose
+                    texte={`Série en cours : ${s.texte}. Le triangle pointe vers le haut pour des victoires, vers le bas pour des défaites.`}
+                    style={{
+                      color: s.chaud ? (s.gagne ? T.sodium : T.clay) : T.dim,
+                      fontWeight: s.chaud ? 700 : 400,
+                    }}
+                  >
+                    {s.court}
+                  </Glose>
+                )}
+                {b.clinche && (
+                  <span style={{ marginLeft: "auto", color: T.sodium, fontWeight: 700 }}>
+                    QUALIFIÉE
+                  </span>
+                )}
+                {!b.clinche && b.magique != null && (
+                  <Glose
+                    texte="Nombre magique : le total de victoires de cette équipe, ajouté aux défaites de son poursuivant, qui suffit à lui garantir la division. Il baisse d'un cran à chaque victoire, et d'un cran aussi quand le poursuivant perd. À zéro, c'est plié."
+                    style={{
+                      marginLeft: "auto", background: "rgba(242,206,107,.16)",
+                      border: `1px solid ${T.sodium}`, color: T.sodium,
+                      borderRadius: 2, padding: "2px 7px", fontWeight: 700,
+                      display: "inline-block",
+                    }}
+                  >
+                    magique {b.magique}
+                  </Glose>
+                )}
+                {!b.clinche && b.magique == null && b.elimination != null && (
+                  <Glose
+                    texte="Nombre d'éliminations : les défaites de cette équipe, ajoutées aux victoires du meneur, qui la sortiraient définitivement de la course à la division. C'est exactement le même calcul que le nombre magique, vu depuis l'autre camp."
+                    style={{ marginLeft: "auto", color: T.dim, display: "inline-block" }}
+                  >
+                    élimination {b.elimination}
+                  </Glose>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
   );
 }
 
@@ -2411,7 +2561,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           }}
         >
           <input type="checkbox" checked={spoilers} onChange={(e) => setSpoilers(e.target.checked)} />
-          AFFICHER LES SCORES
+          AFFICHER LES RÉSULTATS
         </label>
       </div>
 
@@ -2582,13 +2732,18 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                     <span style={{ color: matchDuJour.h < 24 ? T.sodium : T.chalk, fontWeight: 700 }}>
                       {" · "}{matchDuJour.hhmm.replace(":", "h")}
                     </span>
-                    {" Paris · "}{matchDuJour.stade}
+                    {" Paris · "}
+                    <LienStade
+                      idStade={matchDuJour.idStade}
+                      nom={matchDuJour.stade}
+                      style={{ fontFamily: FF_MONO, fontSize: 11 }}
+                    />
                   </div>
                 </div>
               </div>
 
               <p style={{ fontSize: 14, color: T.sodium, fontStyle: "italic", margin: "10px 0 0" }}>
-                {raisonEnvie(matchDuJour, bilans, stades, stadeHabituel)}
+                {raisonEnvie(matchDuJour, bilans, stades, stadeHabituel, spoilers)}
               </p>
 
               {(matchDuJour.derby || matchDuJour.finale || matchDuJour.neutre) && (
@@ -2610,83 +2765,11 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           )}
 
           {/* --- la situation au classement --- */}
-          {situation.length > 0 && (
-            <div style={{ marginBottom: 22 }}>
-              <div
-                style={{
-                  fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
-                  color: T.sodium, marginBottom: 8,
-                }}
-              >
-                LA SITUATION
-              </div>
-              <div style={{ display: "grid", gap: 6 }}>
-                {situation.map(({ eq, b }) => {
-                  const s = libelleSerie(b);
-                  return (
-                    <div
-                      key={eq.id}
-                      style={{
-                        display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap",
-                        background: "rgba(11,36,26,.5)", borderRadius: 3, padding: "7px 11px",
-                        fontFamily: FF_MONO, fontSize: 11,
-                      }}
-                    >
-                      <Img src={CAP(eq.id)} alt="" size={22} />
-                      <span style={{ color: T.chalk }}>{eq.abbreviation}</span>
-                      <span style={{ color: T.chalk, fontWeight: 700 }}>
-                        {b.v}-{b.d}
-                      </span>
-                      <span style={{ color: T.dim }}>
-                        {RANG_FR(b.rang)} {DIVISION_FR(eq.division?.name || "")}
-                        {b.retard ? ` · à ${b.retard.toFixed(1)}` : ""}
-                        {b.wc != null && !b.meneur
-                          ? ` · wild card ${b.wc <= 0 ? `+${Math.abs(b.wc).toFixed(1)}` : b.wc.toFixed(1)}`
-                          : ""}
-                      </span>
-                      {s && (
-                        <Glose
-                          texte={`Série en cours : ${s.texte}. Le triangle pointe vers le haut pour des victoires, vers le bas pour des défaites.`}
-                          style={{
-                            color: s.chaud ? (s.gagne ? T.sodium : T.clay) : T.dim,
-                            fontWeight: s.chaud ? 700 : 400,
-                          }}
-                        >
-                          {s.court}
-                        </Glose>
-                      )}
-                      {b.clinche && (
-                        <span style={{ marginLeft: "auto", color: T.sodium, fontWeight: 700 }}>
-                          QUALIFIÉE
-                        </span>
-                      )}
-                      {!b.clinche && b.magique != null && (
-                        <Glose
-                          texte="Nombre magique : le total de victoires de cette équipe, ajouté aux défaites de son poursuivant, qui suffit à lui garantir la division. Il baisse d'un cran à chaque victoire, et d'un cran aussi quand le poursuivant perd. À zéro, c'est plié."
-                          style={{
-                            marginLeft: "auto", background: "rgba(242,206,107,.16)",
-                            border: `1px solid ${T.sodium}`, color: T.sodium,
-                            borderRadius: 2, padding: "2px 7px", fontWeight: 700,
-                            display: "inline-block",
-                          }}
-                        >
-                          magique {b.magique}
-                        </Glose>
-                      )}
-                      {!b.clinche && b.magique == null && b.elimination != null && (
-                        <Glose
-                          texte="Nombre d'éliminations : les défaites de cette équipe, ajoutées aux victoires du meneur, qui la sortiraient définitivement de la course à la division. C'est exactement le même calcul que le nombre magique, vu depuis l'autre camp."
-                          style={{ marginLeft: "auto", color: T.dim, display: "inline-block" }}
-                        >
-                          élimination {b.elimination}
-                        </Glose>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+          <BandeauSituation
+            situation={situation}
+            spoilers={spoilers}
+            onAfficher={() => setSpoilers(true)}
+          />
 
           {/* --- a ne pas rater --- */}
           {aVoir.length > 0 && (
@@ -2724,7 +2807,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                           <span style={{ color: T.dim, fontSize: 9.5 }}> Paris</span>
                         </div>
                         <div style={{ fontSize: 13, color: T.sodium, fontStyle: "italic" }}>
-                          {raisonEnvie(m, bilans, stades, stadeHabituel)}
+                          {raisonEnvie(m, bilans, stades, stadeHabituel, spoilers)}
                         </div>
                         <div
                           style={{
@@ -2940,6 +3023,449 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   );
 }
 
+
+/* ================================================================== *
+ *  VUE « LES TERRAINS »
+ *  Le contour vient du Bureau du recensement americain (domaine public),
+ *  decode, projete et simplifie une fois pour toutes : l'application
+ *  n'embarque qu'un trace fige de 1 Ko, sans bibliotheque cartographique
+ *  ni tuiles a telecharger. Les coordonnees des 30 parcs sont deja
+ *  chargees avec le reste, donc aucune requete supplementaire.
+ *
+ *  Le trace passe par un filtre anti-aiguilles : sur les cotes tres
+ *  decoupees — delta du Mississippi, baie de Chesapeake — Douglas-Peucker
+ *  conserve les points extremes en jetant les intermediaires, ce qui
+ *  produit des pointes en zigzag. On retire iterativement les sommets dont
+ *  l'angle est tres aigu et la saillie notable.
+ * ================================================================== */
+const CONTOUR_US = "M809.2 480.1L853.8 568.3L851.3 607.7L836.1 610.8L810.4 582.8L809.5 571.4L806.1 577.7L793.2 559.7L799.0 550.1L792.7 547.9L789.9 552.3L789.8 527.0L766.9 506.3L753.2 502.9L738.5 517.0L710.4 501.2L675.5 507.8L672.5 505.8L648.0 506.3L637.4 516.0L650.7 515.9L641.6 525.0L656.6 534.7L650.7 535.0L638.7 532.5L617.5 540.1L596.4 522.5L540.9 531.5L531.4 527.5L526.9 541.6L483.3 578.0L480.0 583.8L479.2 620.0L442.2 605.8L433.9 577.5L396.1 522.9L376.7 519.2L352.7 537.3L331.2 521.0L324.7 497.0L296.4 465.9L260.8 461.2L259.4 472.0L201.1 463.6L131.2 422.4L134.1 417.4L85.7 411.7L82.5 391.1L66.3 369.7L29.5 347.4L32.9 334.0L13.3 276.3L15.2 262.0L15.2 261.0L7.8 254.2L1.3 228.1L0.0 190.0L13.1 168.5L14.8 133.4L47.9 57.7L46.9 56.6L55.1 42.0L51.6 5.3L80.5 19.7L87.7 26.0L86.2 0.0L326.4 49.0L494.4 59.9L522.8 60.0L525.9 51.1L531.1 66.0L544.9 71.1L615.1 79.9L594.0 106.5L593.2 115.3L602.1 115.5L640.7 90.8L639.0 103.3L662.1 114.0L688.5 103.3L691.7 109.7L706.4 106.8L705.4 115.5L684.6 119.9L667.4 133.6L668.0 126.6L660.1 128.6L662.1 141.7L650.5 192.7L664.3 230.8L680.8 211.2L672.9 170.9L678.9 149.1L686.5 141.2L688.0 152.2L696.5 135.6L693.9 127.0L722.7 135.3L726.5 157.5L734.5 162.9L739.9 167.5L746.2 197.1L732.8 220.4L751.2 226.5L805.2 188.9L803.5 171.8L850.8 155.9L846.2 140.3L864.6 116.9L931.1 94.4L942.8 35.3L968.2 37.6L977.7 69.7L997.2 85.5L981.5 104.8L975.4 101.7L976.3 112.1L966.9 104.5L968.6 115.3L948.3 137.5L947.2 163.9L960.8 173.8L965.6 165.5L969.4 176.4L953.7 184.1L946.7 185.0L944.7 187.5L909.8 205.2L907.9 211.2L903.8 214.8L908.1 236.9L898.7 259.6L898.1 272.9L889.3 286.4L871.8 267.8L875.5 249.3L866.1 258.7L876.8 286.9L858.0 282.2L856.8 282.4L879.2 290.1L878.2 297.3L879.6 298.2L882.3 311.5L888.5 312.2L896.5 331.7L888.1 327.8L882.2 336.3L880.7 338.4L891.9 334.6L893.9 342.3L896.9 334.4L900.1 342.0L893.8 350.7L887.9 353.7L892.5 358.9L817.1 439.7L809.2 480.1Z";
+const CARTE_L = 1000, CARTE_H = 620;
+
+/* Projection conique equivalente d'Albers, parametres usuels pour les
+   Etats-Unis. L'ordonnee est inversee : en SVG, y croit vers le bas. */
+const AL = (() => {
+  const r = (d) => (d * Math.PI) / 180;
+  const p1 = r(29.5), p2 = r(45.5), lat0 = r(37.5), lon0 = r(-96);
+  const n = (Math.sin(p1) + Math.sin(p2)) / 2;
+  const C = Math.cos(p1) ** 2 + 2 * n * Math.sin(p1);
+  return { r, n, C, lon0, r0: Math.sqrt(C - 2 * n * Math.sin(lat0)) / n,
+           mx: -0.368551, my: -0.244743, k: 1381.8587 };
+})();
+
+function projeter(lon, lat) {
+  if (lat == null || lon == null) return null;
+  const la = AL.r(lat), lo = AL.r(lon);
+  const rr = Math.sqrt(AL.C - 2 * AL.n * Math.sin(la)) / AL.n;
+  const th = AL.n * (lo - AL.lon0);
+  const x = rr * Math.sin(th);
+  const y = -(AL.r0 - rr * Math.cos(th));
+  return { x: (x - AL.mx) * AL.k, y: (y - AL.my) * AL.k };
+}
+
+/* Article Wikipedia de chaque parc, resolu une fois pour toutes plutot
+   qu'interroge a l'execution : pas de requete, pas de quota, pas d'erreur a
+   gerer. Les noms de l'API portent les sponsors — « UNIQLO Field at Dodger
+   Stadium » — d'ou la resolution par recherche et non par titre exact.
+   Wikipedia maintient des redirections quand un article est renomme, donc
+   ces liens survivront aux changements de nom. */
+const WIKI_STADES = {
+  1: "Angel Stadium of Anaheim",
+  2: "Oriole Park at Camden Yards",
+  3: "Fenway Park",
+  4: "Guaranteed Rate Field",
+  5: "Progressive Field",
+  7: "Kauffman Stadium",
+  12: "Tropicana Field",
+  14: "Centre Rogers",
+  15: "Chase Field",
+  17: "Wrigley Field",
+  19: "Coors Field",
+  22: "Dodger Stadium",
+  31: "PNC Park",
+  32: "American Family Field",
+  680: "T-Mobile Park",
+  2392: "Daikin Park",
+  2394: "Comerica Park",
+  2395: "Oracle Park",
+  2529: "Sutter Health Park",
+  2602: "Great American Ball Park",
+  2680: "Petco Park",
+  2681: "Citizens Bank Park",
+  2889: "Busch Stadium",
+  3289: "Citi Field",
+  3309: "Nationals Park",
+  3312: "Target Field",
+  3313: "Yankee Stadium",
+  4169: "LoanDepot Park",
+  4705: "Truist Park",
+  5325: "Globe Life Field",
+};
+
+const lienWiki = (idStade) =>
+  WIKI_STADES[idStade]
+    ? `https://fr.wikipedia.org/wiki/${encodeURIComponent(WIKI_STADES[idStade].replace(/ /g, "_"))}`
+    : null;
+
+const PIEDS = 0.3048;
+const enM = (p) => (p ? Math.round(p * PIEDS) : null);
+
+/* Le baseball compte en pieds, jamais en yards : c'est l'unite peinte sur les
+   murs des stades et annoncee par les commentateurs. L'API la fournit telle
+   quelle — les metres sont notre conversion, pas l'inverse. On affiche donc
+   les deux, les metres d'abord pour la lecture, les pieds pour reconnaitre le
+   chiffre quand il apparait a l'ecran. */
+const enPi = (p) => (p ? Math.round(p) : null);
+
+/* « 105 · 124 · 102 m  ·  345 · 407 · 335 ft » */
+function distancesCloture(s) {
+  const trio = [s?.gauche, s?.centre, s?.droite];
+  if (!s?.centre) return null;
+  const m = trio.map(enM).filter(Boolean).join(" · ");
+  const pi = trio.map(enPi).filter(Boolean).join(" · ");
+  return { m: `${m} m`, pi: `${pi} ft` };
+}
+
+/* Plan du terrain, trace a partir des trois distances annoncees.
+   Les lignes de faute partent du marbre a 45 degres de part et d'autre ;
+   le mur relie la ligne gauche, le champ centre et la ligne droite. */
+function PlanTerrain({ s, taille = 190 }) {
+  if (!s?.centre) return null;
+  const cx = taille / 2, cy = taille * 0.92;
+  const ech = (taille * 0.82) / Math.max(s.centre, s.gauche || 0, s.droite || 0);
+  const pt = (d, deg) => {
+    const a = (deg * Math.PI) / 180;
+    return [cx + d * ech * Math.cos(a), cy - d * ech * Math.sin(a)];
+  };
+  const G = pt(s.gauche || s.centre * 0.83, 135);
+  const C = pt(s.centre, 90);
+  const D = pt(s.droite || s.centre * 0.83, 45);
+  const craie = { fill: "none", stroke: "rgba(147,166,151,.55)", strokeWidth: 1.5, strokeLinecap: "round" };
+
+  return (
+    <svg width={taille} height={taille} viewBox={`0 0 ${taille} ${taille}`} aria-hidden="true">
+      <path
+        d={`M${cx} ${cy} L${G[0].toFixed(1)} ${G[1].toFixed(1)} Q${cx} ${(C[1] - taille * 0.16).toFixed(1)} ${D[0].toFixed(1)} ${D[1].toFixed(1)} Z`}
+        fill="rgba(239,243,234,.05)" stroke="none"
+      />
+      <path {...craie} d={`M${cx} ${cy} L${G[0].toFixed(1)} ${G[1].toFixed(1)}`} />
+      <path {...craie} d={`M${cx} ${cy} L${D[0].toFixed(1)} ${D[1].toFixed(1)}`} />
+      <path
+        {...craie}
+        stroke="rgba(194,96,58,.75)"
+        strokeWidth="2.5"
+        d={`M${G[0].toFixed(1)} ${G[1].toFixed(1)} Q${cx} ${(C[1] - taille * 0.16).toFixed(1)} ${D[0].toFixed(1)} ${D[1].toFixed(1)}`}
+      />
+      <circle cx={cx} cy={cy} r="2.5" fill="rgba(242,206,107,.9)" />
+      {[[G, s.gauche, "start"], [C, s.centre, "middle"], [D, s.droite, "end"]].map(
+        ([p, d, anc], i) =>
+          d ? (
+            <text
+              key={i}
+              x={p[0]} y={p[1] - 6}
+              textAnchor={anc === "middle" ? "middle" : anc === "start" ? "start" : "end"}
+              className="ts"
+              style={{ fontFamily: FF_MONO, fontSize: 9, fill: T.dim }}
+            >
+              {enM(d)} m
+            </text>
+          ) : null
+      )}
+      {[[G, s.gauche, "start"], [C, s.centre, "middle"], [D, s.droite, "end"]].map(
+        ([p, d, anc], i) =>
+          d ? (
+            <text
+              key={`pi${i}`}
+              x={p[0]} y={p[1] + 5}
+              textAnchor={anc === "middle" ? "middle" : anc === "start" ? "start" : "end"}
+              style={{ fontFamily: FF_MONO, fontSize: 8, fill: "rgba(147,166,151,.55)" }}
+            >
+              {enPi(d)} ft
+            </text>
+          ) : null
+      )}
+    </svg>
+  );
+}
+
+function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = null }) {
+  const [choisi, setChoisi] = useState(cible ? Number(cible) : null);
+  useEffect(() => {
+    if (cible) setChoisi(Number(cible));
+  }, [cible]);
+  const [ceSoir, setCeSoir] = useState([]);
+
+  /* Les matchs de la nuit en cours, pour allumer les parcs concernes et
+     tracer les deplacements. Requete minimale : deux journees, champs filtres. */
+  useEffect(() => {
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const auj = new Date();
+    const veille = new Date(Date.now() - 864e5);
+    let annule = false;
+    fetch(
+      `${API}/schedule?sportId=1&startDate=${iso(veille)}&endDate=${iso(auj)}` +
+        `&fields=dates,games,gamePk,gameDate,status,abstractGameState,codedGameState,doubleHeader,teams,home,away,team,id,venue,id`
+    )
+      .then((r) => r.json())
+      .then((d) => {
+        if (annule) return;
+        const n = new Date();
+        const h = Number(new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(n));
+        const jour = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
+        const nuit = h < AUBE ? decalerJour(jour, -1) : jour;
+        const out = [];
+        for (const jr of d.dates || [])
+          for (const g of jr.games || []) {
+            if (g.status?.codedGameState === "D") continue;
+            if (nuitDe(g.gameDate).jour !== nuit) continue;
+            out.push({
+              id: g.gamePk,
+              idStade: g.venue?.id,
+              idExt: g.teams.away.team.id,
+              idDom: g.teams.home.team.id,
+              hhmm: nuitDe(g.gameDate).hhmm,
+              // "Y" = programme traditionnel, un seul billet ; "S" = deux
+              // entrees separees, souvent le rattrapage d'un match reporte.
+              double: g.doubleHeader,
+            });
+          }
+        setCeSoir(out);
+      })
+      .catch(() => {});
+    return () => {
+      annule = true;
+    };
+  }, []);
+
+  const parEquipe = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
+  const parVenue = useMemo(() => {
+    const m = {};
+    for (const t of teams) if (t.venue?.id) (m[t.venue.id] ??= []).push(t);
+    return m;
+  }, [teams]);
+
+  const actifs = useMemo(() => new Set(ceSoir.map((g) => g.idStade)), [ceSoir]);
+
+  const points = useMemo(
+    () =>
+      Object.entries(stades)
+        .filter(([id]) => parVenue[id])
+        .map(([id, s]) => ({ id: Number(id), s, eq: parVenue[id], p: projeter(s.lon, s.lat) }))
+        .filter((x) => x.p),
+    [stades, parVenue]
+  );
+
+  /* Un deplacement par match : du parc habituel du visiteur vers le parc du soir. */
+  const trajets = useMemo(
+    () =>
+      ceSoir
+        .map((g) => {
+          const dep = stades[stadeHabituel[g.idExt]];
+          const arr = stades[g.idStade];
+          const a = dep && projeter(dep.lon, dep.lat);
+          const b = arr && projeter(arr.lon, arr.lat);
+          return a && b ? { id: g.id, a, b } : null;
+        })
+        .filter(Boolean),
+    [ceSoir, stades, stadeHabituel]
+  );
+
+  const ouvert = choisi != null ? points.find((x) => x.id === choisi) : null;
+
+  return (
+    <div className="alm-rise">
+      <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 16px" }}>
+        Les trente parcs de la ligue. Ceux qui reçoivent cette nuit sont allumés, et un trait relie
+        chaque équipe visiteuse à sa destination. Touche un point pour le détail du terrain.
+      </p>
+
+      <svg
+        viewBox={`-20 -20 ${CARTE_L + 40} ${CARTE_H + 40}`}
+        style={{ width: "100%", display: "block", marginBottom: 14 }}
+        role="img"
+        aria-label="Carte des trente parcs de la Ligue majeure de baseball"
+      >
+        <path d={CONTOUR_US} fill="rgba(239,243,234,.04)" stroke="rgba(147,166,151,.4)" strokeWidth="2" />
+
+        {trajets.map((t) => (
+          <path
+            key={t.id}
+            d={`M${t.a.x.toFixed(1)} ${t.a.y.toFixed(1)} Q${((t.a.x + t.b.x) / 2).toFixed(1)} ${(Math.min(t.a.y, t.b.y) - 40).toFixed(1)} ${t.b.x.toFixed(1)} ${t.b.y.toFixed(1)}`}
+            fill="none"
+            stroke="rgba(242,206,107,.35)"
+            strokeWidth="1.5"
+            strokeDasharray="5 6"
+          />
+        ))}
+
+        {points.map(({ id, s, eq, p }) => {
+          const actif = actifs.has(id);
+          const suivi = eq.some((t) => suivies.includes(t.id));
+          const sel = choisi === id;
+          return (
+            <g key={id} onClick={() => setChoisi(sel ? null : id)} style={{ cursor: "pointer" }}>
+              <circle cx={p.x} cy={p.y} r="20" fill="transparent" />
+              <circle
+                cx={p.x} cy={p.y} r={actif ? 9 : 6}
+                fill={actif ? T.sodium : suivi ? T.clay : "rgba(147,166,151,.55)"}
+                stroke={sel ? T.chalk : "rgba(18,36,27,.85)"}
+                strokeWidth={sel ? 3 : 1.5}
+              />
+              <text
+                x={p.x} y={p.y - (actif ? 15 : 12)} textAnchor="middle"
+                style={{
+                  fontFamily: FF_MONO, fontSize: 15, fontWeight: 700,
+                  fill: actif ? T.sodium : "rgba(239,243,234,.7)", pointerEvents: "none",
+                }}
+              >
+                {eq.map((t) => t.abbreviation).join("/")}
+              </text>
+            </g>
+          );
+        })}
+      </svg>
+
+      {ouvert && (
+        <div
+          className="alm-rise"
+          style={{
+            background: "rgba(11,36,26,.85)", border: `1px solid ${T.clay}`,
+            borderRadius: 3, padding: "14px 16px", display: "flex",
+            gap: 18, flexWrap: "wrap", alignItems: "flex-start",
+          }}
+        >
+          <PlanTerrain s={ouvert.s} />
+          <div style={{ flex: "1 1 240px", minWidth: 0, fontFamily: FF_MONO, fontSize: 11.5 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              {ouvert.eq.map((t) => (
+                <Img key={t.id} src={CAP(t.id)} alt="" size={26} />
+              ))}
+              <span style={{ fontSize: 13, color: T.chalk }}>{ouvert.s.nom}</span>
+              <button
+                onClick={() => setChoisi(null)}
+                aria-label="Fermer"
+                style={{ all: "unset", cursor: "pointer", marginLeft: "auto", color: T.dim, fontSize: 15 }}
+              >
+                ×
+              </button>
+            </div>
+            <div style={{ display: "grid", gap: 3 }}>
+              <Ligne k="ville" v={ouvert.s.ville} />
+              <Ligne k="équipes" v={ouvert.eq.map((t) => t.name).join(", ")} />
+              <Ligne
+                k="altitude"
+                v={
+                  ouvert.s.alt != null ? (
+                    <span>
+                      {enM(ouvert.s.alt)} m
+                      <span style={{ color: T.dim }}> ({enPi(ouvert.s.alt)} ft)</span>
+                      {ouvert.s.alt >= 3000 ? (
+                        <span style={{ color: T.sodium }}> — l'air est fin, la balle porte</span>
+                      ) : null}
+                    </span>
+                  ) : null
+                }
+              />
+              <Ligne
+                k="clôtures"
+                v={(() => {
+                  const d = distancesCloture(ouvert.s);
+                  if (!d) return null;
+                  return (
+                    <span
+                      title="Gauche · centre · droite. Le baseball compte en pieds (ft) : c'est le chiffre peint sur les murs des stades."
+                      style={{ cursor: "help" }}
+                    >
+                      {d.m}
+                      <span style={{ color: T.dim }}> · {d.pi}</span>
+                    </span>
+                  );
+                })()}
+              />
+              <Ligne k="capacité" v={ouvert.s.places ? `${ouvert.s.places.toLocaleString("fr-FR")} places` : null} />
+              <Ligne k="toit" v={ouvert.s.toit && ouvert.s.toit !== "Open" ? ouvert.s.toit : "à ciel ouvert"} />
+              <Ligne
+                k="en savoir plus"
+                v={
+                  lienWiki(ouvert.id) ? (
+                    <a
+                      href={lienWiki(ouvert.id)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      style={{ color: T.chalk, borderBottom: `1px solid ${T.clay}`, textDecoration: "none" }}
+                    >
+                      {WIKI_STADES[ouvert.id]} ↗
+                    </a>
+                  ) : null
+                }
+              />
+              <Ligne k="cette nuit" v={<AffichesDuSoir liste={ceSoir.filter((g) => g.idStade === ouvert.id)} parEquipe={parEquipe} />} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 16, lineHeight: 1.7 }}>
+        {actifs.size} parc{actifs.size > 1 ? "s" : ""} en activité cette nuit.
+        <br />
+        Fond de carte : Bureau du recensement des États-Unis, domaine public. Projection conique
+        équivalente d'Albers. Les distances des clôtures sont celles annoncées par la ligue.
+      </p>
+    </div>
+  );
+}
+
+/* Un double programme oppose toujours les deux memes equipes : verifie sur
+   les 23 cas de la saison, tous a deux matchs. On mutualise donc l'affiche et
+   on n'ajoute que le nombre et les horaires. Le cas d'affiches differentes
+   n'a jamais ete observe, mais le repli existe : il coute trois lignes. */
+function AffichesDuSoir({ liste, parEquipe }) {
+  if (!liste?.length) return null;
+  const paire = (g) => [g.idExt, g.idDom].join("-");
+  const memeAffiche = new Set(liste.map(paire)).size === 1;
+  const groupes = memeAffiche ? [liste] : liste.map((g) => [g]);
+
+  return (
+    <span style={{ display: "grid", gap: 4 }}>
+      {groupes.map((gr) => {
+        const g = gr[0];
+        return (
+          <span key={g.id} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <Img src={CAP(g.idDom)} alt="" size={18} />
+            <span>{parEquipe[g.idDom]?.name || "?"}</span>
+            <span style={{ color: T.dim }}>reçoit</span>
+            <Img src={CAP(g.idExt)} alt="" size={18} />
+            <span>{parEquipe[g.idExt]?.name || "?"}</span>
+            {gr.length > 1 ? (
+              <span
+                title={
+                  gr[0].double === "S"
+                    ? "Double programme à entrées séparées, souvent le rattrapage d'un match reporté."
+                    : "Double programme : deux matchs dans la journée, un seul billet."
+                }
+                style={{ color: T.sodium, cursor: "help" }}
+              >
+                ×{gr.length} · {gr.map((x) => x.hhmm).join(" et ")}
+              </span>
+            ) : (
+              <span style={{ color: T.sodium }}>{g.hhmm}</span>
+            )}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function Ligne({ k, v }) {
+  if (!v) return null;
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <span style={{ color: T.dim, minWidth: 74, flexShrink: 0 }}>{k}</span>
+      <span style={{ color: T.chalk, minWidth: 0 }}>{v}</span>
+    </div>
+  );
+}
+
 /* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
@@ -2953,12 +3479,21 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 const ALIAS = {
   programme: "nuits", nuits: "nuits", calendrier: "nuits",
   carnet: "carnet", almanach: "carnet", notions: "carnet",
+  terrains: "terrains", stades: "terrains", parcs: "terrains", carte: "terrains",
 };
-const FRAGMENT = { nuits: "programme", carnet: "carnet" };
+const FRAGMENT = { nuits: "programme", carnet: "carnet", terrains: "terrains" };
 
 function ongletDepuisFragment(brut) {
-  const h = String(brut || "").replace(/^#\/?/, "").trim().toLowerCase();
+  const h = String(brut || "").replace(/^#\/?/, "").trim().toLowerCase().split("/")[0];
   return ALIAS[h] || "carnet";
+}
+
+/* Un fragment peut designer une cible dans l'onglet : #terrains/5325 ouvre
+   directement la fiche du parc 5325. Le lien reste partageable et le bouton
+   « precedent » du navigateur fonctionne sans effort. */
+function cibleDepuisFragment(brut) {
+  const bouts = String(brut || "").replace(/^#\/?/, "").trim().split("/");
+  return bouts.length > 1 && bouts[1] ? bouts[1] : null;
 }
 
 export default function App() {
@@ -2967,17 +3502,24 @@ export default function App() {
   const [onglet, setOnglet] = useState(() =>
     typeof window === "undefined" ? "carnet" : ongletDepuisFragment(window.location.hash)
   );
+  const [cible, setCible] = useState(() =>
+    typeof window === "undefined" ? null : cibleDepuisFragment(window.location.hash)
+  );
 
   // Boutons precedent/suivant du navigateur.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const maj = () => setOnglet(ongletDepuisFragment(window.location.hash));
+    const maj = () => {
+      setOnglet(ongletDepuisFragment(window.location.hash));
+      setCible(cibleDepuisFragment(window.location.hash));
+    };
     window.addEventListener("hashchange", maj);
     return () => window.removeEventListener("hashchange", maj);
   }, []);
 
   const changerOnglet = (id) => {
     setOnglet(id);
+    setCible(null);
     // Affecter location.hash cree une entree d'historique : le bouton
     // « precedent » revient donc a l'onglet d'avant, comme on l'attend.
     try {
@@ -3190,9 +3732,18 @@ export default function App() {
         >
           <Onglet id="carnet">Le carnet</Onglet>
           <Onglet id="nuits">Le programme</Onglet>
+          <Onglet id="terrains">Les terrains</Onglet>
         </nav>
 
-        {onglet === "carnet" ? (
+        {onglet === "terrains" ? (
+          <VueTerrains
+            teams={teams}
+            stades={stades}
+            stadeHabituel={stadeHabituel}
+            suivies={suivies}
+            cible={cible}
+          />
+        ) : onglet === "carnet" ? (
           <VueAlmanach teams={teams} appris={appris} setAppris={setAppris} suivies={suivies} />
         ) : (
           <VueNuits
@@ -3256,6 +3807,9 @@ function btnStyle(primaire) {
  * --------------------------------------------------------------------- */
 export {
   ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche, purgerReports, HORIZON_JOUR, extraireResumes, sourceLisible,
+  VueTerrains, projeter, enM, CONTOUR_US, CARTE_L, CARTE_H,
+  cibleDepuisFragment, AffichesDuSoir, LienStade, enPi, distancesCloture, BandeauSituation,
+  WIKI_STADES, lienWiki,
   // vue « le programme »
   VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,

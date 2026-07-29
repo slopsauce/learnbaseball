@@ -671,3 +671,231 @@ describe("résumés de match", () => {
     assert.equal(A.sourceLisible([{ name: "trickplay", url: "https://x/y.jpg" }]), null);
   });
 });
+
+describe("carte des terrains", () => {
+  /* Le trace est fige au moment de la conception : ces tests verifient que la
+     projection reste coherente avec lui, pas qu'elle est mathematiquement
+     exacte dans l'absolu. Valeurs en dur, jamais derivees des constantes. */
+  const parc = (lon, lat) => A.projeter(lon, lat);
+
+  test("les parcs tombent dans le cadre", () => {
+    const villes = [
+      [-122.33, 47.59], [-71.09, 42.34], [-80.22, 25.77],
+      [-93.27, 44.98], [-79.38, 43.64], [-104.99, 39.75],
+    ];
+    for (const [lo, la] of villes) {
+      const p = parc(lo, la);
+      assert.ok(p.x >= 0 && p.x <= A.CARTE_L, `x=${p.x} hors cadre pour ${lo},${la}`);
+      assert.ok(p.y >= 0 && p.y <= A.CARTE_H, `y=${p.y} hors cadre pour ${lo},${la}`);
+    }
+  });
+
+  test("l'orientation est correcte", () => {
+    const seattle = parc(-122.33, 47.59), boston = parc(-71.09, 42.34);
+    const miami = parc(-80.22, 25.77), minneapolis = parc(-93.27, 44.98);
+    assert.ok(seattle.x < boston.x, "Seattle doit être à gauche de Boston");
+    assert.ok(seattle.y < miami.y, "Seattle doit être plus haut que Miami");
+    assert.ok(minneapolis.y < miami.y, "Minneapolis doit être plus haut que Miami");
+  });
+
+  /* Regression : l'ordonnee d'Albers croît vers le nord, le SVG vers le bas.
+     Sans l'inversion, la carte etait retournee. */
+  test("le nord est bien en haut", () => {
+    const nord = parc(-96, 48), sud = parc(-96, 26);
+    assert.ok(nord.y < sud.y, "à longitude égale, le nord doit avoir un y plus petit");
+  });
+
+  test("les deux parcs d'une même ville se touchent", () => {
+    const a = parc(-73.93, 40.83), b = parc(-73.85, 40.76); // Bronx et Queens
+    assert.ok(Math.hypot(a.x - b.x, a.y - b.y) < 30, "les deux parcs new-yorkais sont trop éloignés");
+  });
+
+  /* Verifier les bornes ne suffit pas : une echelle trop petite garde tout
+     dans le cadre en tassant la carte dans un coin. On exige donc qu'elle
+     le remplisse. Fractions en dur, jamais derivees de l'echelle. */
+  test("la carte occupe bien le cadre", () => {
+    const seattle = parc(-122.33, 47.59), miami = parc(-80.22, 25.77);
+    const large = Math.abs(miami.x - seattle.x) / A.CARTE_L;
+    const haut = Math.abs(miami.y - seattle.y) / A.CARTE_H;
+    assert.ok(large > 0.6, `Seattle-Miami ne couvre que ${(large * 100).toFixed(0)} % de la largeur`);
+    assert.ok(haut > 0.6, `Seattle-Miami ne couvre que ${(haut * 100).toFixed(0)} % de la hauteur`);
+  });
+
+  test("tolère une coordonnée manquante", () => {
+    assert.equal(A.projeter(null, 40), null);
+    assert.equal(A.projeter(-96, null), null);
+  });
+
+  test("le tracé embarqué reste léger et exploitable", () => {
+    assert.ok(A.CONTOUR_US.startsWith("M"), "le tracé doit être un chemin SVG");
+    assert.ok(A.CONTOUR_US.length < 4000, `tracé de ${A.CONTOUR_US.length} o, trop lourd`);
+    assert.ok(A.CONTOUR_US.includes("Z"), "le contour doit être fermé");
+  });
+
+  test("conversion des pieds en mètres", () => {
+    assert.equal(A.enM(400), 122);   // champ centre typique
+    assert.equal(A.enM(5190), 1582); // altitude de Coors Field
+    assert.equal(A.enM(null), null);
+  });
+});
+
+describe("cible dans le fragment d'URL", () => {
+  test("extrait l'identifiant du parc", () => {
+    assert.equal(A.cibleDepuisFragment("#terrains/5325"), "5325");
+    assert.equal(A.cibleDepuisFragment("terrains/22"), "22");
+    assert.equal(A.cibleDepuisFragment("#/terrains/19"), "19");
+  });
+  test("renvoie null sans cible", () => {
+    for (const h of ["#terrains", "#programme", "", "#", null, undefined, "#terrains/"])
+      assert.equal(A.cibleDepuisFragment(h), null, `cible fantome pour ${JSON.stringify(h)}`);
+  });
+  test("l'onglet reste correct malgré la cible", () => {
+    assert.equal(A.ongletDepuisFragment("#terrains/5325"), "terrains");
+    assert.equal(A.ongletDepuisFragment("#programme/xyz"), "nuits");
+  });
+  test("un fragment à cible inconnue retombe sur le carnet", () => {
+    assert.equal(A.ongletDepuisFragment("#nawak/5325"), "carnet");
+  });
+});
+
+describe("unités des distances", () => {
+  /* Le baseball compte en pieds : c'est l'unite de l'API et celle peinte sur
+     les murs. Les metres sont notre conversion, pas l'inverse. */
+  test("les pieds sont la valeur d'origine, non convertie", () => {
+    assert.equal(A.enPi(400), 400);
+    assert.equal(A.enPi(5190), 5190);
+    assert.equal(A.enPi(null), null);
+  });
+
+  test("la conversion en mètres reste juste", () => {
+    assert.equal(A.enM(400), 122);   // champ centre courant
+    assert.equal(A.enM(310), 94);    // ligne courte
+    assert.equal(A.enM(5190), 1582); // altitude de Coors Field
+  });
+
+  test("les deux unités sont cohérentes entre elles", () => {
+    for (const p of [302, 330, 400, 420, 435]) {
+      const ecart = Math.abs(A.enM(p) / A.enPi(p) - 0.3048);
+      assert.ok(ecart < 0.005, `rapport incohérent pour ${p} ft`);
+    }
+  });
+
+  test("les trois clôtures sortent dans les deux unités", () => {
+    const d = A.distancesCloture({ gauche: 330, centre: 400, droite: 330 });
+    assert.match(d.m, /101 · 122 · 101 m/);
+    assert.match(d.pi, /330 · 400 · 330 ft/);
+  });
+
+  test("tolère une ligne manquante", () => {
+    const d = A.distancesCloture({ centre: 400 });
+    assert.match(d.m, /122 m/);
+    assert.match(d.pi, /400 ft/);
+  });
+
+  test("renvoie null sans champ centre", () => {
+    assert.equal(A.distancesCloture({ gauche: 330 }), null);
+    assert.equal(A.distancesCloture(null), null);
+  });
+});
+
+describe("qualité du tracé de la carte", () => {
+  const pts = A.CONTOUR_US.replace(/^M|Z$/g, "").split("L").map((s) => s.split(" ").map(Number));
+  const angle = (a, b, c) => {
+    const v1 = [a[0] - b[0], a[1] - b[1]], v2 = [c[0] - b[0], c[1] - b[1]];
+    const n1 = Math.hypot(...v1), n2 = Math.hypot(...v2);
+    if (!n1 || !n2) return 180;
+    const cs = Math.max(-1, Math.min(1, (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)));
+    return (Math.acos(cs) * 180) / Math.PI;
+  };
+
+  /* Regression : Douglas-Peucker sur les cotes tres decoupees conservait les
+     points extremes en jetant les intermediaires, produisant des zigzags en
+     aiguille dans le golfe du Mexique et sur la baie de Chesapeake. */
+  test("aucune pointe en aiguille", () => {
+    const n = pts.length;
+    const fautifs = [];
+    for (let i = 0; i < n; i++) {
+      const a = pts[(i - 1 + n) % n], b = pts[i], c = pts[(i + 1) % n];
+      const saillie = Math.min(Math.hypot(a[0] - b[0], a[1] - b[1]), Math.hypot(c[0] - b[0], c[1] - b[1]));
+      if (angle(a, b, c) < 25 && saillie > 6) fautifs.push([i, b]);
+    }
+    assert.equal(fautifs.length, 0, `${fautifs.length} pointe(s) : ${JSON.stringify(fautifs.slice(0, 3))}`);
+  });
+
+  test("le tracé reste léger", () => {
+    assert.ok(pts.length > 100, "trop simplifié, le contour deviendrait méconnaissable");
+    assert.ok(A.CONTOUR_US.length < 4000, `${A.CONTOUR_US.length} o, trop lourd`);
+  });
+
+  test("tous les points sont dans le cadre", () => {
+    for (const [x, y] of pts) {
+      assert.ok(x >= -1 && x <= A.CARTE_L + 1, `x=${x} hors cadre`);
+      assert.ok(y >= -1 && y <= A.CARTE_H + 1, `y=${y} hors cadre`);
+    }
+  });
+});
+
+describe("étanchéité aux spoilers", () => {
+  /* Regression : le bandeau LA SITUATION et les mentions de série révélaient
+     le résultat de la nuit précédente. « sur 4 victoires » dit qu'ils ont
+     gagné hier ; le bilan et le nombre magique bougent aussi chaque nuit. */
+  const bil = {
+    119: { pct: 0.63, meneur: true, magique: 45, serieNb: 4, serieType: "wins" },
+    147: { pct: 0.56, wc: 1.5, serieNb: 12, serieType: "losses" },
+  };
+  const m = { ...match({ h: 20, coteDom: 0.72 }), idDom: 119, idExt: 147 };
+
+  test("aucune série n'est citée quand les résultats sont masqués", () => {
+    const r = A.raisonEnvie(m, bil, {}, {}, false);
+    assert.doesNotMatch(r, /victoire|défaite/, `série révélée : "${r}"`);
+  });
+
+  test("la série revient quand les résultats sont demandés", () => {
+    const r = A.raisonEnvie(m, bil, {}, {}, true);
+    assert.match(r, /victoires|défaites/, "la série doit apparaître une fois les résultats acceptés");
+  });
+
+  test("le comportement par défaut est le silence", () => {
+    // Un appel sans le drapeau ne doit jamais divulguer : c'est le sens sûr.
+    const r = A.raisonEnvie(m, bil, {}, {});
+    assert.doesNotMatch(r, /victoire|défaite/, "l'oubli du paramètre ne doit pas spoiler");
+  });
+
+  test("une raison utile subsiste malgré le masquage", () => {
+    const r = A.raisonEnvie(m, bil, {}, {}, false);
+    assert.ok(r && r.length > 5, "la carte ne doit pas se retrouver sans motif");
+  });
+});
+
+describe("liens Wikipédia des stades", () => {
+  test("les trente parcs ont un article", () => {
+    const n = Object.keys(A.WIKI_STADES).length;
+    assert.equal(n, 30, `${n} entrées au lieu de 30`);
+    for (const [id, titre] of Object.entries(A.WIKI_STADES))
+      assert.ok(titre && titre.length > 2, `titre vide pour le stade ${id}`);
+  });
+
+  test("l'URL est bien formée", () => {
+    const u = A.lienWiki(Object.keys(A.WIKI_STADES)[0]);
+    assert.match(u, /^https:\/\/fr\.wikipedia\.org\/wiki\//);
+    assert.doesNotMatch(u, / /, "les espaces doivent être encodés");
+  });
+
+  /* Les noms de l'API portent les sponsors : « UNIQLO Field at Dodger
+     Stadium » doit pointer vers l'article « Dodger Stadium ». */
+  test("le sponsor ne pollue pas le lien", () => {
+    const dodger = Object.values(A.WIKI_STADES).find((x) => /Dodger/.test(x));
+    assert.equal(dodger, "Dodger Stadium");
+    assert.ok(!Object.values(A.WIKI_STADES).some((x) => /UNIQLO|Daikin Field/.test(x)));
+  });
+
+  test("les titres sont uniques", () => {
+    const t = Object.values(A.WIKI_STADES);
+    assert.equal(new Set(t).size, t.length, "deux parcs pointent vers le même article");
+  });
+
+  test("renvoie null pour un stade inconnu", () => {
+    assert.equal(A.lienWiki(999999), null);
+    assert.equal(A.lienWiki(null), null);
+  });
+});
