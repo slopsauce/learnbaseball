@@ -155,3 +155,117 @@ describe("contrat : acces depuis un navigateur", () => {
     assert.equal(r.status, 200, "les casquettes ne repondent plus");
   });
 });
+
+describe("contrat : suivi en direct", () => {
+  /* Ajoutes apres coup : ces appels sont arrives avec l'onglet Le direct et
+     n'etaient couverts par rien. Le filtre de champs est le point sensible —
+     c'est lui qui fait tomber feed/live de 625 Ko a 1,6 Ko. */
+  const CHAMPS_DIRECT = [
+    "liveData", "plays", "currentPlay", "result", "description", "linescore",
+    "currentInning", "currentInningOrdinal", "inningState", "balls", "strikes", "outs",
+    "teams", "home", "away", "runs", "hits", "errors", "innings", "num", "ordinalNum",
+    "offense", "defense", "first", "second", "third", "batter", "pitcher", "onDeck",
+    "fullName", "id", "gameData", "status", "abstractGameState", "detailedState",
+  ].join(",");
+
+  const CHAMPS_HISTOIRE = [
+    "liveData", "plays", "allPlays", "result", "description", "eventType", "isScoringPlay",
+    "atBatIndex", "about", "inning", "halfInning", "isComplete", "playEvents", "type", "details",
+  ].join(",");
+
+  let pk;
+  before(async () => {
+    const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-2)}&endDate=${jours(0)}`);
+    const jeux = (d.dates || []).flatMap((x) => x.games || []);
+    pk = (jeux.find((g) => g.status.abstractGameState === "Live")
+      || jeux.filter((g) => g.status.codedGameState === "F").pop())?.gamePk;
+    assert.ok(pk, "aucun match exploitable");
+  });
+
+  test("feed/live reste filtrable et leger", async () => {
+    const r = await fetch(`https://statsapi.mlb.com/api/v1.1/game/${pk}/feed/live?fields=${CHAMPS_DIRECT}`);
+    const texte = await r.text();
+    assert.equal(r.status, 200);
+    assert.ok(texte.length < 20000,
+      `${texte.length} o : le filtre de champs ne fonctionne plus, la vue tirerait 625 Ko toutes les 15 s`);
+    const d = JSON.parse(texte);
+    const L = d.liveData?.linescore;
+    assert.ok(L, "linescore disparu du feed");
+    for (const c of ["currentInningOrdinal", "inningState", "outs", "teams", "innings"])
+      assert.ok(L[c] !== undefined, `linescore.${c} disparu`);
+    assert.ok(L.offense !== undefined, "offense disparu — les coureurs en dependent");
+    assert.ok(L.defense !== undefined, "defense disparu — le lanceur en depend");
+  });
+
+  test("l'historique expose un identifiant stable par action", async () => {
+    const d = await j(`https://statsapi.mlb.com/api/v1.1/game/${pk}/feed/live?fields=${CHAMPS_HISTOIRE}`);
+    const a = d.liveData?.plays?.allPlays || [];
+    assert.ok(a.length, "allPlays vide");
+    const idx = a.map((x) => x.about?.atBatIndex);
+    assert.ok(idx.every((x) => Number.isInteger(x)), "atBatIndex disparu — les cles React casseraient");
+    assert.equal(new Set(idx).size, idx.length, "atBatIndex n'est plus unique");
+    assert.ok(a.some((x) => x.result?.eventType), "eventType disparu — les codes du marqueur en dependent");
+    assert.ok(a.some((x) => x.about?.isScoringPlay !== undefined), "isScoringPlay disparu");
+  });
+
+  test("contextMetrics fournit la probabilite de victoire", async () => {
+    const c = await j(`${API}/game/${pk}/contextMetrics`);
+    assert.ok(c.homeWinProbability !== undefined, "homeWinProbability disparu");
+    const p = Number(c.homeWinProbability);
+    assert.ok(p >= 0 && p <= 100, `probabilite hors bornes : ${p}`);
+  });
+
+  test("le vocabulaire des etats n'a pas change", async () => {
+    /* Un match en « Game Over » avait disparu du selecteur parce qu'on se
+       fiait au seul code « F ». On surveille desormais le vocabulaire. */
+    const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-2)}&endDate=${jours(1)}`);
+    const jeux = (d.dates || []).flatMap((x) => x.games || []);
+    const abstraits = new Set(jeux.map((g) => g.status.abstractGameState));
+    for (const a of abstraits)
+      assert.ok(["Live", "Final", "Preview", "Other"].includes(a), `etat abstrait inconnu : ${a}`);
+    const codes = new Set(jeux.map((g) => g.status.codedGameState));
+    const connus = ["I", "P", "S", "F", "O", "D", "C", "U", "T", "M", "N"];
+    for (const c of codes) assert.ok(connus.includes(c), `code d'etat inconnu : ${c}`);
+  });
+});
+
+describe("contrat : montages video", () => {
+  let pk;
+  before(async () => {
+    const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-4)}&endDate=${jours(-1)}`);
+    pk = (d.dates || []).flatMap((x) => x.games || [])
+      .filter((g) => g.status.codedGameState === "F").pop()?.gamePk;
+    assert.ok(pk, "aucun match termine recemment");
+  });
+
+  test("resume et match condense restent identifiables", async () => {
+    const c = await j(`${API}/game/${pk}/content`);
+    const items = c.highlights?.highlights?.items || [];
+    if (!items.length) return; // certains matchs n'ont aucun montage
+    const tax = new Set(
+      items.flatMap((it) => (it.keywordsAll || []).filter((k) => k.type === "mlbtax").map((k) => k.value))
+    );
+    assert.ok(tax.has("mlb_recap") || tax.has("condensed_game"),
+      `categories mlbtax presentes : ${[...tax].join(", ") || "aucune"}`);
+    const montage = items.find((it) =>
+      (it.keywordsAll || []).some((k) => k.type === "mlbtax" && /recap|condensed/.test(k.value))
+    );
+    assert.ok((montage.playbacks || []).some((x) => x.url), "aucune source lisible");
+  });
+});
+
+describe("contrat : imagerie", () => {
+  test("les portraits de joueurs repondent", async () => {
+    const d = await j(`${API}/schedule?sportId=1&date=${jours(-1)}&hydrate=probablePitcher`);
+    const id = (d.dates || []).flatMap((x) => x.games || [])
+      .map((g) => g.teams.home.probablePitcher?.id).find(Boolean);
+    if (!id) return;
+    const r = await fetch(`https://midfield.mlbstatic.com/v1/people/${id}/spots/120`);
+    assert.equal(r.status, 200, "les portraits ne repondent plus");
+  });
+
+  test("les ecussons ronds repondent", async () => {
+    const r = await fetch("https://midfield.mlbstatic.com/v1/team/119/spots/72");
+    assert.equal(r.status, 200, "les ecussons de la grille de selection ne repondent plus");
+  });
+});
