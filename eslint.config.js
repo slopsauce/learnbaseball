@@ -43,11 +43,14 @@ export default [
       "react-hooks/exhaustive-deps": "warn",
       "no-dupe-keys": "error",
 
-      // Signale les appels a setState depuis un effet. Ici ce sont presque
-      // tous des chargements reseau, ou le motif est legitime ; on garde
-      // l'avertissement pour relire les quelques cas qui ne le sont pas,
-      // sans bloquer le build sur un refactoring qui n'est pas demande.
-      "react-hooks/set-state-in-effect": "warn",
+      // En erreur, pas en avertissement : un avertissement permanent est une
+      // liste de taches que plus personne ne lit. Les trois exceptions du
+      // fichier sont des chargements reseau — « je passe en etat chargement,
+      // puis je pars chercher » — et portent chacune un `disable` motive a
+      // l'endroit precis. Toute NOUVELLE occurrence casse le build, ce qui est
+      // le but : c'est le motif « synchroniser deux etats React » qu'on veut
+      // interdire, pas l'appel a une API distante.
+      "react-hooks/set-state-in-effect": "error",
     },
   },
 

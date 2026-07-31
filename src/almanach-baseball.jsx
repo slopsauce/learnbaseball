@@ -741,6 +741,10 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
   }, []);
 
   useEffect(() => {
+    // `charger` bascule en etat « chargement » avant de partir sur le reseau.
+    // La regle ne voit pas la frontiere asynchrone et lit un enchainement de
+    // rendus la ou il n'y a qu'un passage en attente, voulu et visible.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     charger(teamId);
   }, [teamId, charger]);
 
@@ -776,6 +780,12 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
   );
 
   useEffect(() => {
+    // Cas reel : on passe en revision pendant que la feuille de match charge
+    // encore. Sans cette amorce, l'arrivee des donnees ne declencherait rien et
+    // l'ecran resterait bloque sur « aucune action exploitable ». La question
+    // ne peut pas etre calculee au rendu : `fabriquerQuestion` tire au sort,
+    // donc rendrait le rendu impur.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (mode === "reviser" && !question && sightings.length) suivante([]);
   }, [mode, question, sightings, suivante]);
 
@@ -2210,6 +2220,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 
   useEffect(() => {
     let annule = false;
+    // Passage en etat « chargement » avant la requete : meme motif que dans
+    // le carnet, la regle ne distingue pas un aller-retour reseau d'une
+    // synchronisation entre deux etats React.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPhase("load");
     setErreur("");
     // On tire une journee MLB de plus : une nuit parisienne deborde sur le
@@ -2293,7 +2307,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     [teams]
   );
   const toutes = suivies.length === 0; // aucune selection = tout afficher
-  const estSuivi = (m) => toutes || suivies.includes(m.idExt) || suivies.includes(m.idDom);
+  /* Memorise : `aSuivre` en depend, et une fonction recreee a chaque rendu
+     aurait vide ce memo de son interet. */
+  const estSuivi = useCallback(
+    (m) => toutes || suivies.includes(m.idExt) || suivies.includes(m.idDom),
+    [toutes, suivies]
+  );
 
   const parNuit = useMemo(() => {
     const carte = new Map(nuits.map((n) => [n, []]));
@@ -2322,7 +2341,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
       repartirEnVoies(liste, largeur);
     }
     return carte;
-  }, [matchs, nuits, suivies, toutes, largeur, stadeHabituel, bilans, divisionDe]);
+    // Ni `suivies` ni `toutes` n'interviennent ici : depuis que la frise
+    // montre toute la nuit, le suivi ne decide plus que d'une couleur, au
+    // rendu. Les garder relancait le calcul a chaque changement de selection.
+  }, [matchs, nuits, largeur, stadeHabituel, bilans, divisionDe]);
 
   // Situation au classement des equipes suivies. Au-dela de cinq, la liste
   // devient un tableau de classement — ce n'est pas le role de cette vue.
@@ -2402,7 +2424,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
      une affiche que tu n'as pas choisi de suivre. */
   const aSuivre = useMemo(
     () => [...parNuit.values()].flat().filter(estSuivi),
-    [parNuit, suivies, toutes]
+    [parNuit, estSuivi]
   );
 
   const matchDuJour = useMemo(
@@ -3206,9 +3228,15 @@ function PlanTerrain({ s, taille = 190 }) {
 
 function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = null }) {
   const [choisi, setChoisi] = useState(cible ? Number(cible) : null);
-  useEffect(() => {
+  /* Le fragment peut designer un parc (#terrains/5325) et changer sans que la
+     vue soit remontee — au bouton « precedent », notamment. On se resynchronise
+     pendant le rendu plutot que dans un effet : React reprend aussitot, sans
+     valider l'ecran intermediaire ou l'ancienne fiche etait encore ouverte. */
+  const [cibleVue, setCibleVue] = useState(cible);
+  if (cible !== cibleVue) {
+    setCibleVue(cible);
     if (cible) setChoisi(Number(cible));
-  }, [cible]);
+  }
   const [ceSoir, setCeSoir] = useState([]);
 
   /* Les matchs de la nuit en cours, pour allumer les parcs concernes et
@@ -3736,6 +3764,17 @@ function VueDirect({ teams, suivies = [] }) {
   const [histoire, setHistoire] = useState([]);
   const [toutVoir, setToutVoir] = useState(false);
 
+  /* Changer de match vide le deroule : celui du match precedent n'a plus rien
+     a y faire. Fait pendant le rendu et non dans un effet, sinon l'ecran
+     affiche brievement l'historique de l'ancien match sous l'en-tete du
+     nouveau — un vrai melange, pas seulement un rendu de trop. */
+  const [jeuVu, setJeuVu] = useState(choisi);
+  if (choisi !== jeuVu) {
+    setJeuVu(choisi);
+    setHistoire([]);
+    setToutVoir(false);
+  }
+
   const parId = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
 
   /* La liste des matchs en cours, rafraichie a la meme cadence : un match
@@ -3842,11 +3881,6 @@ function VueDirect({ teams, suivies = [] }) {
       clearInterval(id);
     };
   }, [choisi, spoilers]);
-
-  useEffect(() => {
-    setHistoire([]);
-    setToutVoir(false);
-  }, [choisi]);
 
   const groupes = useMemo(() => grouperParManche(histoire), [histoire]);
   const totalActions = useMemo(
