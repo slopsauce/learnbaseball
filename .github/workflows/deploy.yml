@@ -8,8 +8,8 @@ on:
   # 06h00 UTC, soit 08h00 a Paris en ete. GitHub peut retarder l'execution en
   # periode de charge, et desactive les taches planifiees apres 60 jours sans
   # activite sur le depot.
-  # schedule:
-  #   - cron: "0 6 * * *"
+  schedule:
+    - cron: "0 6 * * *"
 
 permissions: { contents: read, pages: write, id-token: write }
 concurrency: { group: pages, cancel-in-progress: true }
@@ -25,6 +25,11 @@ jobs:
       - uses: actions/setup-node@v5
         with: { node-version: 22, cache: npm }
       - run: npm ci
+
+      # Le linteur d'abord : il est instantane et attrape des fautes que ni les
+      # tests ni le build ne voient — un `className` declare deux fois, un
+      # `useEffect` sans dependances.
+      - run: npm run lint
 
       # Bloque le deploiement si un test echoue. `npm run build` seul laisserait
       # passer une page blanche : empaqueter n'est pas executer.
@@ -50,7 +55,14 @@ jobs:
   # lui, donc une rupture d'API ne bloque aucune mise en ligne. En revanche son
   # echec marque le run en rouge et declenche une notification — ce que
   # `continue-on-error` aurait justement supprime.
+  #
+  # Il ne tourne QUE sur le passage planifie (ou a la demande). Sans ce filtre
+  # il partait a chaque push : une quinzaine d'appels reels a MLB pour surveiller
+  # un contrat qui ne change pas parce qu'on a pousse du CSS — et, le cron etant
+  # reste commente depuis son introduction, la surveillance quotidienne qu'il
+  # decrit n'avait en fait jamais tourne une seule fois.
   contrat-api:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

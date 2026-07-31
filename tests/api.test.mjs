@@ -17,7 +17,20 @@ const j = async (u) => {
 const iso = (d) => d.toISOString().slice(0, 10);
 const jours = (n) => iso(new Date(Date.now() + n * 864e5));
 
-describe("contrat : /schedule", () => {
+/* De novembre a fevrier la ligue ne joue pas : /schedule est vide, aucun
+   gamePk n'existe, et les suites qui en dependent echouaient toutes. Quatre
+   mois de rouge par an, ce qui apprend surtout a ne plus regarder la couleur.
+   L'absence de matiere n'est pas une rupture de contrat : on saute.
+   Le hors-saison se constate une fois, au chargement du module.
+   Une PANNE, elle, doit continuer d'echouer bruyamment — c'est tout l'objet de
+   ces tests — d'ou le `throw` plutot qu'un `catch` qui vaudrait acquittement. */
+const horsSaison = await (async () => {
+  const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-10)}&endDate=${jours(0)}`);
+  const matchs = (d.dates || []).flatMap((x) => x.games || []);
+  return matchs.length ? false : "hors saison : aucun match sur les dix derniers jours";
+})();
+
+describe("contrat : /schedule", { skip: horsSaison }, () => {
   let g;
   before(async () => {
     const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-10)}&endDate=${jours(0)}&hydrate=team,probablePitcher`);
@@ -45,7 +58,7 @@ describe("contrat : /schedule", () => {
   });
 });
 
-describe("contrat : /standings", () => {
+describe("contrat : /standings", { skip: horsSaison }, () => {
   let tr;
   before(async () => {
     const d = await j(`${API}/standings?leagueId=103,104&season=${SAISON}&standingsTypes=regularSeason`);
@@ -89,7 +102,7 @@ describe("contrat : /teams et /venues", () => {
   });
 });
 
-describe("contrat : donnees de match", () => {
+describe("contrat : donnees de match", { skip: horsSaison }, () => {
   let pk;
   before(async () => {
     const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-10)}&endDate=${jours(0)}`);
@@ -156,7 +169,7 @@ describe("contrat : acces depuis un navigateur", () => {
   });
 });
 
-describe("contrat : suivi en direct", () => {
+describe("contrat : suivi en direct", { skip: horsSaison }, () => {
   /* Ajoutes apres coup : ces appels sont arrives avec l'onglet Le direct et
      n'etaient couverts par rien. Le filtre de champs est le point sensible —
      c'est lui qui fait tomber feed/live de 625 Ko a 1,6 Ko. */
@@ -229,7 +242,7 @@ describe("contrat : suivi en direct", () => {
   });
 });
 
-describe("contrat : montages video", () => {
+describe("contrat : montages video", { skip: horsSaison }, () => {
   let pk;
   before(async () => {
     const d = await j(`${API}/schedule?sportId=1&startDate=${jours(-4)}&endDate=${jours(-1)}`);
