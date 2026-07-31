@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react";
 
+import { CONCEPTS, BY_ID } from "./donnees/notions.js";
+import { CONTOUR_US, CARTE_L, CARTE_H, projeter } from "./donnees/carte.js";
+import { WIKI_STADES, AFFICHES } from "./donnees/stades.js";
+
 /* ------------------------------------------------------------------ *
  *  L'ALMANACH
  *  Deux vues sur une meme saison :
@@ -24,332 +28,47 @@ const FF_DISPLAY = "'Big Shoulders Display', 'Haettenschweiler', Impact, sans-se
 const FF_BODY = "'Spectral', Georgia, serif";
 const FF_MONO = "'Space Mono', ui-monospace, Menlo, monospace";
 
+/* ------------------------------------------------------------------ *
+ *  POLICES — servies depuis le depot, pas depuis Google
+ *  L'`@import` vers fonts.googleapis.com transmettait l'adresse IP de
+ *  chaque visiteur a un tiers, et retardait le texte d'un aller-retour
+ *  reseau : la premiere peinture se faisait en Georgia puis sautait.
+ *  Ici les fichiers sont locaux, en sous-ensemble latin, sous OFL —
+ *  voir public/polices/LISEZMOI-LICENCE.txt.
+ *
+ *  Big Shoulders est une police VARIABLE : Google servait le meme
+ *  fichier pour 400, 700 et 800 (md5 identiques). Un seul fichier suffit
+ *  donc, declare sur toute sa plage de graisses — 71 Ko economises.
+ *
+ *  `BASE` suit la base de Vite : sous GitHub Pages le site est servi
+ *  depuis /<depot>/, et une URL absolue pointerait a cote.
+ * ------------------------------------------------------------------ */
+const BASE =
+  (typeof import.meta !== "undefined" && import.meta.env?.BASE_URL) || "/";
+
+const POLICES = [
+  ["Big Shoulders Display", "big-shoulders-display-var", "normal", "400 800"],
+  ["Spectral", "spectral-400", "normal", "400"],
+  ["Spectral", "spectral-400-italic", "italic", "400"],
+  // Pas de Spectral gras : les quatre <strong> de l'application sont tous
+  // dans des paragraphes en Space Mono. Verifie avant de retirer le fichier.
+  ["Space Mono", "space-mono-400", "normal", "400"],
+  ["Space Mono", "space-mono-700", "normal", "700"],
+]
+  .map(
+    ([famille, fichier, style, poids]) => `    @font-face {
+      font-family: '${famille}';
+      font-style: ${style};
+      font-weight: ${poids};
+      font-display: swap;
+      src: url('${BASE}polices/${fichier}.woff2') format('woff2');
+    }`
+  )
+  .join("\n");
+
 const STORE_KEY = "almanach-carnet-v1";
 const API = "https://statsapi.mlb.com/api/v1";
-const CONCEPTS = [
-  {
-    id: "ground_out", code: "6-3", legs: [], rarete: 3,
-    titre: "Le roulant",
-    gist: "La balle roule au sol, un intérieur la ramasse et relaie au 1er but.",
-    corps: [
-      "C'est le retrait le plus banal du baseball, et pourtant sa notation est le cœur du carnet de marque. Chaque position défensive porte un numéro fixe : 1 lanceur, 2 receveur, 3 premier but, 4 deuxième but, 5 troisième but, 6 arrêt-court, 7 champ gauche, 8 champ centre, 9 champ droit.",
-      "Un « 6-3 » se lit donc : l'arrêt-court a ramassé, le premier-but a réceptionné. Tu peux reconstruire l'action entière à partir de deux chiffres — c'est pour ça que ce système a survécu à un siècle et demi.",
-    ],
-    retenir: "Les positions sont numérotées de 1 à 9. Un retrait s'écrit comme un itinéraire.",
-  },
-  {
-    id: "fly_out", code: "F8", legs: [], rarete: 4,
-    titre: "Le ballon capturé",
-    gist: "Frappée en cloche, attrapée en vol : retiré, sans discussion.",
-    corps: [
-      "Toute balle attrapée avant de toucher le sol retire le frappeur, où qu'elle soit tombée — même en zone de fausse balle, même dans les gradins si le défenseur y plonge.",
-      "La conséquence importante est pour les coureurs : au moment exact où la balle touche le gant, ils doivent tous être en contact avec leur but. Sinon la défense relaie sur la base et les retire par appel. C'est ce qui explique pourquoi tu les vois hésiter au lieu de courir.",
-    ],
-    retenir: "Balle attrapée en vol = frappeur retiré, et tous les coureurs doivent être revenus toucher leur but.",
-  },
-  {
-    id: "line_out", code: "L4", legs: [], rarete: 32,
-    titre: "La ligne",
-    gist: "Frappée tendue, à plat, très vite — et interceptée.",
-    corps: [
-      "Une ligne (line drive) part avec un angle de lancement bas et une vitesse de sortie élevée. Statistiquement c'est le type de contact le plus productif du baseball : environ 65 % des lignes deviennent des coups sûrs, contre 24 % des roulants.",
-      "Sauf quand elle va droit sur un défenseur. Le frappeur a alors parfaitement fait son travail et se retrouve retiré quand même — d'où l'expression qui revient sans cesse dans les commentaires : « il a frappé dans la malchance ».",
-    ],
-    retenir: "La ligne est le meilleur contact possible. Son résultat dépend surtout de qui se trouve sur sa trajectoire.",
-  },
-  {
-    id: "pop_out", code: "P4", legs: [], rarete: 36,
-    titre: "La chandelle",
-    gist: "Une cloche très haute et très courte, qui retombe sur le champ intérieur.",
-    corps: [
-      "C'est le pire résultat possible pour un frappeur : contact sous la balle, aucune distance, capture assurée. Zéro chance de coup sûr.",
-      "Une règle particulière s'y attache. Avec des coureurs aux 1er et 2e buts et moins de deux retraits, l'arbitre peut déclarer un « ballon intérieur » (infield fly) : le frappeur est retiré d'office, même si personne n'attrape la balle. Sans cette règle, la défense laisserait tomber la chandelle exprès pour déclencher un double-jeu facile.",
-    ],
-    retenir: "La chandelle ne produit jamais rien — et la règle du ballon intérieur empêche la défense d'en abuser.",
-  },
-  {
-    id: "strikeout", code: "K", legs: [], rarete: 9,
-    titre: "Le retrait sur trois prises",
-    gist: "Trois prises et le frappeur repart s'asseoir.",
-    corps: [
-      "Une prise (strike) se compte de trois façons : lancer dans la zone que le frappeur laisse passer, élan dans le vide, ou fausse balle. Nuance essentielle : une fausse balle ne peut jamais donner la troisième prise. Un frappeur peut en enchaîner quinze, l'échange continue.",
-      "Le carnet distingue les deux façons de se faire retirer : « K » quand le frappeur s'est élancé, « {{K}} » — le même, retourné — quand il a regardé passer. Cette convention date des années 1860 et n'a jamais bougé.",
-    ],
-    retenir: "Trois prises, mais une fausse balle ne peut pas être la troisième.",
-  },
-  {
-    id: "walk", code: "BB", legs: [1], rarete: 13,
-    titre: "Le but sur balles",
-    gist: "Quatre lancers hors de la zone : le 1er but est offert.",
-    corps: [
-      "Quatre balles et le frappeur marche jusqu'au 1er but sans avoir à courir. Personne ne peut le retirer en chemin.",
-      "Le détail qui change tout dans les statistiques : un but sur balles n'est pas un « at-bat ». Il disparaît complètement du calcul de la moyenne au bâton — ni au numérateur, ni au dénominateur. C'est pour ça qu'un frappeur très patient a une AVG qui sous-estime sa vraie valeur, et pourquoi on lui préfère l'OBP, qui compte les buts sur balles.",
-    ],
-    retenir: "Quatre balles = 1er but gratuit. Invisible pour la moyenne, décisif pour l'OBP.",
-  },
-  {
-    id: "intent_walk", code: "IBB", legs: [1], rarete: 82,
-    titre: "Le but sur balles intentionnel",
-    gist: "La défense offre le 1er but exprès, pour éviter un frappeur.",
-    corps: [
-      "Le manager décide de ne pas affronter un frappeur dangereux et lui donne le but. Depuis 2017 il n'y a même plus besoin de lancer : un signe au marbre suffit, le frappeur y va directement.",
-      "Ça paraît absurde d'offrir un coureur, mais l'arithmétique tient : ça met en place un retrait forcé au 2e but (donc un double-jeu possible), et ça amène au marbre un frappeur plus faible. Le calcul se retourne dès que les buts sont déjà bien occupés — remplir les buts pour éviter un seul homme est presque toujours une mauvaise idée.",
-    ],
-    retenir: "On offre un but pour créer un retrait forcé et affronter quelqu'un de moins bon.",
-  },
-  {
-    id: "hit_by_pitch", code: "HBP", legs: [1], rarete: 57,
-    titre: "Atteint par un lancer",
-    gist: "Le lancer touche le frappeur : 1er but offert.",
-    corps: [
-      "Le frappeur touché obtient le 1er but, à une condition : il doit avoir tenté d'éviter la balle. S'il se laisse volontairement heurter, ou si la balle le touche dans la zone de prises, l'arbitre refuse.",
-      "Comme le but sur balles, ça ne compte pas comme un at-bat et n'affecte donc pas la moyenne. Certains frappeurs en font une compétence : se tenir très près du marbre et accepter d'encaisser. Le record moderne d'une saison dépasse les 50.",
-    ],
-    retenir: "Touché = 1er but, à condition d'avoir essayé de l'éviter.",
-  },
-  {
-    id: "single", code: "1B", legs: [1], rarete: 10,
-    titre: "Le simple",
-    gist: "Un coup sûr qui amène le frappeur au 1er but.",
-    corps: [
-      "La brique de base de l'attaque : la balle tombe dans un espace libre, le frappeur atteint le 1er but sans erreur de la défense.",
-      "Regarde ce qu'il fait en arrivant. Il traverse le but à pleine vitesse et freine dix mètres plus loin — le 1er but est le seul où le dépassement est autorisé sans risque, tant qu'il ne tente pas d'aller au 2e. C'est pour ça qu'il ne s'arrête jamais dessus.",
-    ],
-    retenir: "Un simple vaut 27 mètres. Le 1er but est le seul qu'on a le droit de dépasser.",
-  },
-  {
-    id: "double", code: "2B", legs: [1, 2], rarete: 22,
-    titre: "Le double",
-    gist: "Deux buts d'un coup : le frappeur est en position de marquer.",
-    corps: [
-      "Un double se joue presque toujours dans les couloirs entre deux voltigeurs, ou en longeant la ligne de faute. Le frappeur arrondit le 1er but sans ralentir et glisse au 2e.",
-      "Son intérêt réel est situationnel : au 2e but, on est en « position de marquer », c'est-à-dire qu'un simple ordinaire suffira à ramener le point. C'est le seuil qui fait basculer la valeur d'un coureur, bien plus que le simple fait d'avoir avancé d'une base.",
-    ],
-    retenir: "Au 2e but, on est en position de marquer : un simple suffit ensuite.",
-  },
-  {
-    id: "triple", code: "3B", legs: [1, 2, 3], rarete: 77,
-    titre: "Le triple",
-    gist: "Le coup le plus rare et le plus spectaculaire après le circuit.",
-    corps: [
-      "Trois buts d'un coup, sans erreur défensive. C'est rare parce qu'il faut réunir deux choses qui coexistent mal : une balle frappée assez loin pour ne pas être un double, mais pas assez pour sortir — et un coureur assez rapide pour couvrir 82 mètres pendant que le relais revient.",
-      "Le triple dépend donc énormément du stade. Un champ droit profond et irrégulier en produit beaucoup ; un parc symétrique et compact quasiment aucun. C'est la statistique la plus sensible à l'architecture du terrain.",
-    ],
-    retenir: "Le triple exige un frappeur rapide et un stade aux dimensions bizarres.",
-  },
-  {
-    id: "home_run", code: "HR", legs: [1, 2, 3, 4], scored: true, rarete: 47,
-    titre: "Le circuit",
-    gist: "La balle sort du terrain en zone bonne : tour d'honneur.",
-    corps: [
-      "La balle franchit la clôture en territoire de bonnes balles. Le frappeur et tous les coureurs marquent. La seule contrainte qui reste est de toucher les quatre buts dans l'ordre — l'oublier fait annuler le point sur appel de la défense, et ça arrive une fois par décennie.",
-      "Le carnet trace le losange en entier et noircit l'intérieur : c'est la marque visuelle d'un point marqué. Un circuit vaut au minimum 1 point produit (le frappeur se compte lui-même), et jusqu'à 4 si les buts sont pleins.",
-    ],
-    retenir: "Losange complet, intérieur noirci. Le frappeur compte son propre point produit.",
-  },
-  {
-    id: "grand_slam", code: "GS", legs: [1, 2, 3, 4], scored: true, rarete: 92,
-    titre: "Le grand chelem",
-    gist: "Un circuit avec les buts pleins : quatre points d'un seul coup.",
-    corps: [
-      "Le maximum de points qu'une seule balle frappée peut produire. Environ un match sur vingt en contient un.",
-      "C'est aussi le seul moment où la stratégie du but sur balles intentionnel se retourne violemment : remplir les buts pour éviter un frappeur, c'est offrir à son successeur la possibilité de tout renverser d'un coup.",
-    ],
-    retenir: "Quatre points d'un coup — la sanction maximale d'une défense qui a rempli les buts.",
-  },
-  {
-    id: "sac_fly", code: "SF", legs: [], rarete: 62,
-    titre: "Le ballon-sacrifice",
-    gist: "Un retrait qui produit un point — et qui n'abîme pas la moyenne.",
-    corps: [
-      "Avec un coureur au 3e but et moins de deux retraits, le frappeur envoie une cloche assez profonde. La balle est attrapée, il est retiré ; mais le coureur, resté collé au but, part au moment de la capture et marque avant le relais. C'est le « tag up ».",
-      "La statistique traite ce retrait comme un service rendu : +1 point produit pour le frappeur, et l'at-bat est retiré du calcul de la moyenne. Une cloche identique sans coureur au 3e aurait, elle, compté comme un échec. Même geste, deux comptabilisations — c'est un des héritages les plus arbitraires du règlement.",
-    ],
-    retenir: "Retiré, mais +1 RBI et l'at-bat est effacé de la moyenne.",
-  },
-  {
-    id: "sac_bunt", code: "SH", legs: [], rarete: 80,
-    titre: "L'amorti-sacrifice",
-    gist: "Le frappeur se retire volontairement pour faire avancer un coureur.",
-    corps: [
-      "Il ne s'élance pas : il tend la batte et amortit la balle à quelques mètres, pour qu'elle roule mollement. La défense n'a le temps que de le retirer au 1er but, pendant que le coureur avance.",
-      "La sabermétrie a beaucoup abîmé cette tactique : donner un retrait pour gagner une base fait baisser l'espérance de points dans la grande majorité des situations. Elle survit surtout en fin de match serré, quand on ne cherche qu'un seul point, et dans les mains des lanceurs — mauvais frappeurs par définition.",
-    ],
-    retenir: "On échange un retrait contre une base. Rentable seulement quand un seul point compte.",
-  },
-  {
-    id: "gidp", code: "GIDP", legs: [], rarete: 52,
-    titre: "Le double-jeu",
-    gist: "Un roulant, deux retraits : la pire chose qui puisse arriver à une attaque.",
-    corps: [
-      "Coureur au 1er but, roulant vers le champ intérieur : la défense relaie au 2e pour retirer le coureur forcé, puis au 1er pour le frappeur. Le carnet l'écrit comme un itinéraire — « 6-4-3 » signifie arrêt-court, deuxième-but, premier-but.",
-      "Le coureur forcé est retirable par simple toucher du but, sans qu'on ait besoin de le toucher lui. C'est précisément ce que la défense cherche à provoquer, et pourquoi certains lanceurs privilégient les balles basses : elles produisent des roulants.",
-    ],
-    retenir: "Deux retraits en une action, possible uniquement grâce au retrait forcé.",
-  },
-  {
-    id: "double_play", code: "DP", legs: [], rarete: 64,
-    titre: "Le double-jeu en vol",
-    gist: "Une capture, puis un coureur pris trop loin de son but.",
-    corps: [
-      "Variante moins fréquente : la balle est attrapée en vol, et un coureur avait déjà quitté sa base. Le défenseur relaie vers ce but, on le touche, deuxième retrait.",
-      "C'est l'illustration directe de la règle du retour obligatoire. Le coureur a parié que la balle tomberait, il a perdu son pari, et il paie le prix fort.",
-    ],
-    retenir: "Le coureur parti trop tôt sur une balle attrapée se fait éliminer par appel.",
-  },
-  {
-    id: "triple_play", code: "TP", legs: [], rarete: 99,
-    titre: "Le triple-jeu",
-    gist: "Trois retraits sur une seule balle frappée. Deux ou trois par saison, toutes équipes confondues.",
-    corps: [
-      "Il faut une conjonction improbable : aucun retrait, au moins deux coureurs partis, et une balle qui permet d'enchaîner. Le cas le plus spectaculaire est le triple-jeu non assisté, où un seul défenseur fait les trois retraits — c'est arrivé quinze fois en un siècle et demi.",
-      "Si tu en vois un en direct, tu as assisté à quelque chose de plus rare qu'un match parfait.",
-    ],
-    retenir: "Plus rare qu'un match parfait. Note la date.",
-  },
-  {
-    id: "field_error", code: "E6", legs: [1], rarete: 57,
-    titre: "L'erreur",
-    gist: "Le frappeur atteint le but, mais grâce à une faute de la défense.",
-    corps: [
-      "Le marqueur officiel juge qu'un défenseur ordinaire aurait dû réussir le jeu. Le frappeur est sauf, mais ce n'est pas un coup sûr : sa moyenne n'en profite pas, et le lanceur n'est pas tenu responsable des points qui suivront.",
-      "C'est la statistique la plus subjective du baseball. Elle repose sur l'appréciation d'une personne dans la tribune de presse, et elle punit paradoxalement les défenseurs les plus mobiles : celui qui atteint une balle difficile peut la rater et écoper d'une erreur, celui qui n'y va pas n'a rien.",
-    ],
-    retenir: "Sauf, mais sans coup sûr. Et c'est un humain dans les tribunes qui décide.",
-  },
-  {
-    id: "fielders_choice", code: "FC", legs: [1], rarete: 67,
-    titre: "Le choix du défenseur",
-    gist: "Le frappeur est sauf uniquement parce qu'on a préféré retirer quelqu'un d'autre.",
-    corps: [
-      "La défense pouvait le retirer au 1er but, mais a choisi de viser un coureur plus dangereux — souvent celui qui allait marquer. Le frappeur atteint le but sans que ça compte comme un coup sûr.",
-      "C'est une des rares situations où être sauf ne rapporte statistiquement rien : ça compte comme un at-bat raté, exactement comme un retrait. Sur le carnet, l'astuce est de noter aussi le coureur éliminé — sinon la ligne devient incompréhensible à la relecture.",
-    ],
-    retenir: "Sauf, mais compté comme un échec : la défense visait quelqu'un d'autre.",
-  },
-  {
-    id: "force_out", code: "FO", legs: [], rarete: 47,
-    titre: "Le retrait forcé",
-    gist: "Toucher le but suffit — pas besoin de toucher le coureur.",
-    corps: [
-      "Un coureur est forcé quand toutes les bases derrière lui sont occupées : il n'a pas le droit de rester, donc la défense n'a qu'à toucher le but avec la balle.",
-      "C'est la distinction qui gouverne toute la stratégie de course. Un coureur non forcé doit être touché physiquement, ce qui prend beaucoup plus de temps et lui laisse la possibilité de reculer, de feinter, de négocier. Toute la tension du jeu de coureurs vient de là.",
-    ],
-    retenir: "Forcé = on touche le but. Non forcé = on doit toucher le coureur.",
-  },
-  {
-    id: "stolen_base_2b", code: "SB", legs: [2], rarete: 48,
-    titre: "Le vol du 2e but",
-    gist: "Le coureur part pendant le lancer et gagne la base à la course.",
-    corps: [
-      "Il prend quatre mètres d'avance, lit le premier mouvement du lanceur et part. Le budget de temps de la défense est d'environ 3,3 s : 1,35 s pour le lancer, 1,95 s pour le relais du receveur. Le coureur met à peu près autant. Ça se joue au dixième.",
-      "Le facteur décisif n'est pas la vitesse pure mais le départ (« jump ») : réagir au talon du lanceur plutôt qu'à la balle. Les règles de 2023 — deux tentatives de relais maximum par frappeur, buts agrandis — ont fait remonter le taux de réussite au-delà de 80 %.",
-    ],
-    retenir: "Le vol se gagne au départ, pas à la vitesse. Seuil de rentabilité : ~75 % de réussite.",
-  },
-  {
-    id: "stolen_base_3b", code: "SB3", legs: [3], rarete: 72,
-    titre: "Le vol du 3e but",
-    gist: "Plus facile qu'il n'y paraît, mais bien plus risqué stratégiquement.",
-    corps: [
-      "Techniquement c'est plus simple : l'avance possible au 2e but est plus grande, et un lanceur droitier tourne carrément le dos au coureur. Le taux de réussite y est plus élevé qu'au 2e.",
-      "Le risque est ailleurs. Au 3e but avec moins de deux retraits, un simple ballon-sacrifice suffisait à marquer. Se faire éliminer là gaspille une position déjà gagnante — d'où la maxime des entraîneurs : ne jamais faire le premier ou le troisième retrait au 3e but.",
-    ],
-    retenir: "Plus facile à voler, mais l'échec coûte une position déjà payante.",
-  },
-  {
-    id: "stolen_base_home", code: "SBH", legs: [4], scored: true, rarete: 99,
-    titre: "Le vol du marbre",
-    gist: "Voler le point directement. Quasiment disparu.",
-    corps: [
-      "Le coureur au 3e but part vers le marbre pendant le lancer. La balle arrive au receveur en un peu plus d'une seconde ; le coureur a 27 mètres à couvrir. C'est mathématiquement presque impossible, sauf contre un lanceur qui a totalement oublié sa présence.",
-      "On en voit une poignée par saison en MLB, souvent comme deuxième volet d'un double vol destiné à occuper le receveur ailleurs.",
-    ],
-    retenir: "Presque impossible. Ça ne marche que contre l'inattention.",
-  },
-  {
-    id: "caught_stealing", code: "CS", legs: [2], fail: true, rarete: 70,
-    titre: "Le coureur surpris",
-    gist: "Le vol a échoué : le relais du receveur est arrivé le premier.",
-    corps: [
-      "Le receveur a sorti la balle de son gant assez vite. On mesure ça par le « pop time » : de l'impact dans le gant à l'arrivée au 2e but. Moyenne MLB ≈ 1,95 s, élite ≈ 1,80 s. L'essentiel se joue dans le transfert, pas dans la puissance du bras.",
-      "Comme le coureur n'est pas forcé, il faut le toucher — d'où la glissade et le gant tendu vers la jambe. Un coureur pris coûte double : le but perdu et le retrait offert.",
-    ],
-    retenir: "Le receveur gagne par son transfert. Un échec coûte une base et un retrait.",
-  },
-  {
-    id: "pickoff", code: "PO", legs: [], fail: true, rarete: 87,
-    titre: "Le relais surprise",
-    gist: "Le lanceur élimine un coureur qui s'était trop éloigné.",
-    corps: [
-      "Sans lancer vers le marbre, il pivote et relaie directement au but. Le coureur doit plonger pour revenir. Depuis 2023, il n'a droit qu'à deux tentatives par frappeur : une troisième qui échoue est sanctionnée comme un balk.",
-      "L'effet de cette limite est plus dissuasif qu'offensif — après deux tentatives, le coureur sait que le lanceur est désarmé et prend une avance considérable.",
-    ],
-    retenir: "Deux tentatives maximum par frappeur depuis 2023. Après, le coureur est libre.",
-  },
-  {
-    id: "balk", code: "BK", legs: [], rarete: 96,
-    titre: "Le balk",
-    gist: "Mouvement trompeur du lanceur : tous les coureurs avancent gratuitement.",
-    corps: [
-      "Une fois engagé sur la plaque avec des coureurs sur les buts, le lanceur ne peut plus interrompre son mouvement vers le marbre, ni feinter un relais sans lâcher la balle. Toute tromperie est sanctionnée immédiatement : chaque coureur avance d'un but.",
-      "La règle existe pour un motif d'équilibre. Sans elle, le lanceur pourrait figer les coureurs indéfiniment par la feinte, et le vol de base disparaîtrait du jeu. Elle est notoirement subtile — beaucoup de lanceurs ne savent pas exactement où est la limite.",
-    ],
-    retenir: "Toute feinte interdite fait avancer tous les coureurs d'un but.",
-  },
-  {
-    id: "wild_pitch", code: "WP", legs: [], rarete: 60,
-    titre: "Le mauvais lancer",
-    gist: "Le lancer échappe au receveur par la faute du lanceur. Les coureurs avancent.",
-    corps: [
-      "Balle dans la terre, trop haute ou trop écartée pour être rattrapable : le marqueur l'impute au lanceur. Les coureurs en profitent pour avancer d'un but.",
-      "Cas particulier savoureux : si la troisième prise échappe au receveur et que le 1er but est libre, le frappeur retiré peut courir. Il peut donc atteindre le 1er but après un retrait sur trois prises — le retrait est comptabilisé, le frappeur est sauf, les deux à la fois.",
-    ],
-    retenir: "Faute du lanceur, les coureurs avancent. Et une 3e prise échappée peut se courir.",
-  },
-  {
-    id: "passed_ball", code: "PB", legs: [], rarete: 76,
-    titre: "La balle passée",
-    gist: "Même conséquence que le mauvais lancer, mais la faute est au receveur.",
-    corps: [
-      "Le lancer était rattrapable avec un effort ordinaire, le receveur l'a laissé filer. La distinction avec le mauvais lancer est entièrement à la main du marqueur officiel.",
-      "Elle n'est pas cosmétique : elle détermine qui porte la responsabilité des points qui suivront dans les statistiques du lanceur. Un receveur qui encaisse beaucoup de balles passées coûte des points de moyenne de points mérités à tout son staff.",
-    ],
-    retenir: "Même effet, responsabilité inverse. Le marqueur tranche.",
-  },
-  {
-    id: "catcher_interf", code: "CI", legs: [1], rarete: 97,
-    titre: "L'interférence du receveur",
-    gist: "Le gant du receveur touche la batte : 1er but offert.",
-    corps: [
-      "Le receveur s'est avancé trop près et son gant a heurté l'élan. Le frappeur obtient le 1er but automatiquement, et ça ne compte pas comme un at-bat.",
-      "C'est une des lignes les plus rares du carnet — quelques dizaines par saison sur l'ensemble de la ligue. Certains frappeurs, en reculant leur position dans la boîte, en provoquent statistiquement plus que les autres.",
-    ],
-    retenir: "Gant contre batte = 1er but gratuit, et l'at-bat ne compte pas.",
-  },
-  {
-    id: "defensive_indiff", code: "DI", legs: [2], rarete: 89,
-    titre: "L'indifférence défensive",
-    gist: "Le coureur avance sans opposition : ce n'est pas un vol.",
-    corps: [
-      "Fin de match, écart large : la défense se moque complètement du coureur, qui trotte jusqu'au 2e but sans que personne ne bouge. Le marqueur refuse alors de créditer un but volé.",
-      "C'est un garde-fou statistique : sans lui, n'importe qui pourrait gonfler son total de buts volés en fin de match perdu d'avance. Le jugement appartient au marqueur, et il est régulièrement contesté par les joueurs concernés.",
-    ],
-    retenir: "Avancer sans opposition ne vaut pas un vol. Le marqueur veille.",
-  },
-  {
-    id: "full_count", code: "3-2", legs: [], rarete: 27,
-    titre: "Le compte plein",
-    gist: "Trois balles, deux prises : le lancer suivant décide tout.",
-    corps: [
-      "Le compte se lit toujours balles d'abord, prises ensuite. À 3-2, il n'y a plus de marge : le prochain lancer donne un but sur balles, un retrait, ou du contact. Sauf fausse balle, qui remet le compteur en suspens indéfiniment.",
-      "Le rapport de force s'inverse selon le compte. À 3-0, le frappeur sait qu'une balle rapide dans la zone arrive et l'attend ; à 0-2, le lanceur peut se permettre trois lancers hors zone pour le faire s'élancer dans le vide. Le compte plein est le point d'équilibre exact.",
-    ],
-    retenir: "On lit balles-prises. À 3-2, plus personne n'a de marge.",
-  },
-];
 
-const BY_ID = Object.fromEntries(CONCEPTS.map((c) => [c.id, c]));
 
 /* ------------------------------------------------------------------ *
  *  VIDEO
@@ -1650,18 +1369,6 @@ const m2 = (pieds) => Math.round(pieds * PIED);
 
 /* Affiches cocasses. Le texte vit avec les identifiants : les separer
    en deux tables m'avait deja fait oublier d'en declarer la moitie. */
-const AFFICHES = [
-  { ids: [110, 141, 138], texte: "duel d'oiseaux, personne ne sait voler" },
-  { ids: [116, 112], texte: "confrontation féline" },
-  { ids: [134, 136], texte: "des pirates contre des marins, enfin" },
-  { ids: [111, 145], texte: "des chaussettes rouges contre des blanches" },
-  { ids: [117, 108], texte: "duel céleste" },
-  { ids: [139, 146], texte: "deux poissons dans le même bocal" },
-  { ids: [113, 111], texte: "duel de rouges" },
-  // Les deux grandes rivalites du baseball, parfaitement reelles.
-  { ids: [119, 137], texte: "la plus vieille rivalité du baseball, importée de New York en 1958" },
-  { ids: [147, 111], texte: "Yankees contre Red Sox, un siècle de rancune" },
-];
 
 function blagueDeNoms(a, b) {
   const t = AFFICHES.find((x) => x.ids.includes(a) && x.ids.includes(b));
@@ -3115,29 +2822,6 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
  *  produit des pointes en zigzag. On retire iterativement les sommets dont
  *  l'angle est tres aigu et la saillie notable.
  * ================================================================== */
-const CONTOUR_US = "M809.2 480.1L853.8 568.3L851.3 607.7L836.1 610.8L810.4 582.8L809.5 571.4L806.1 577.7L793.2 559.7L799.0 550.1L792.7 547.9L789.9 552.3L789.8 527.0L766.9 506.3L753.2 502.9L738.5 517.0L710.4 501.2L675.5 507.8L672.5 505.8L648.0 506.3L637.4 516.0L650.7 515.9L641.6 525.0L656.6 534.7L650.7 535.0L638.7 532.5L617.5 540.1L596.4 522.5L540.9 531.5L531.4 527.5L526.9 541.6L483.3 578.0L480.0 583.8L479.2 620.0L442.2 605.8L433.9 577.5L396.1 522.9L376.7 519.2L352.7 537.3L331.2 521.0L324.7 497.0L296.4 465.9L260.8 461.2L259.4 472.0L201.1 463.6L131.2 422.4L134.1 417.4L85.7 411.7L82.5 391.1L66.3 369.7L29.5 347.4L32.9 334.0L13.3 276.3L15.2 262.0L15.2 261.0L7.8 254.2L1.3 228.1L0.0 190.0L13.1 168.5L14.8 133.4L47.9 57.7L46.9 56.6L55.1 42.0L51.6 5.3L80.5 19.7L87.7 26.0L86.2 0.0L326.4 49.0L494.4 59.9L522.8 60.0L525.9 51.1L531.1 66.0L544.9 71.1L615.1 79.9L594.0 106.5L593.2 115.3L602.1 115.5L640.7 90.8L639.0 103.3L662.1 114.0L688.5 103.3L691.7 109.7L706.4 106.8L705.4 115.5L684.6 119.9L667.4 133.6L668.0 126.6L660.1 128.6L662.1 141.7L650.5 192.7L664.3 230.8L680.8 211.2L672.9 170.9L678.9 149.1L686.5 141.2L688.0 152.2L696.5 135.6L693.9 127.0L722.7 135.3L726.5 157.5L734.5 162.9L739.9 167.5L746.2 197.1L732.8 220.4L751.2 226.5L805.2 188.9L803.5 171.8L850.8 155.9L846.2 140.3L864.6 116.9L931.1 94.4L942.8 35.3L968.2 37.6L977.7 69.7L997.2 85.5L981.5 104.8L975.4 101.7L976.3 112.1L966.9 104.5L968.6 115.3L948.3 137.5L947.2 163.9L960.8 173.8L965.6 165.5L969.4 176.4L953.7 184.1L946.7 185.0L944.7 187.5L909.8 205.2L907.9 211.2L903.8 214.8L908.1 236.9L898.7 259.6L898.1 272.9L889.3 286.4L871.8 267.8L875.5 249.3L866.1 258.7L876.8 286.9L858.0 282.2L856.8 282.4L879.2 290.1L878.2 297.3L879.6 298.2L882.3 311.5L888.5 312.2L896.5 331.7L888.1 327.8L882.2 336.3L880.7 338.4L891.9 334.6L893.9 342.3L896.9 334.4L900.1 342.0L893.8 350.7L887.9 353.7L892.5 358.9L817.1 439.7L809.2 480.1Z";
-const CARTE_L = 1000, CARTE_H = 620;
-
-/* Projection conique equivalente d'Albers, parametres usuels pour les
-   Etats-Unis. L'ordonnee est inversee : en SVG, y croit vers le bas. */
-const AL = (() => {
-  const r = (d) => (d * Math.PI) / 180;
-  const p1 = r(29.5), p2 = r(45.5), lat0 = r(37.5), lon0 = r(-96);
-  const n = (Math.sin(p1) + Math.sin(p2)) / 2;
-  const C = Math.cos(p1) ** 2 + 2 * n * Math.sin(p1);
-  return { r, n, C, lon0, r0: Math.sqrt(C - 2 * n * Math.sin(lat0)) / n,
-           mx: -0.368551, my: -0.244743, k: 1381.8587 };
-})();
-
-function projeter(lon, lat) {
-  if (lat == null || lon == null) return null;
-  const la = AL.r(lat), lo = AL.r(lon);
-  const rr = Math.sqrt(AL.C - 2 * AL.n * Math.sin(la)) / AL.n;
-  const th = AL.n * (lo - AL.lon0);
-  const x = rr * Math.sin(th);
-  const y = -(AL.r0 - rr * Math.cos(th));
-  return { x: (x - AL.mx) * AL.k, y: (y - AL.my) * AL.k };
-}
 
 /* Article Wikipedia de chaque parc, resolu une fois pour toutes plutot
    qu'interroge a l'execution : pas de requete, pas de quota, pas d'erreur a
@@ -3145,38 +2829,6 @@ function projeter(lon, lat) {
    Stadium » — d'ou la resolution par recherche et non par titre exact.
    Wikipedia maintient des redirections quand un article est renomme, donc
    ces liens survivront aux changements de nom. */
-const WIKI_STADES = {
-  1: "Angel Stadium of Anaheim",
-  2: "Oriole Park at Camden Yards",
-  3: "Fenway Park",
-  4: "Guaranteed Rate Field",
-  5: "Progressive Field",
-  7: "Kauffman Stadium",
-  12: "Tropicana Field",
-  14: "Centre Rogers",
-  15: "Chase Field",
-  17: "Wrigley Field",
-  19: "Coors Field",
-  22: "Dodger Stadium",
-  31: "PNC Park",
-  32: "American Family Field",
-  680: "T-Mobile Park",
-  2392: "Daikin Park",
-  2394: "Comerica Park",
-  2395: "Oracle Park",
-  2529: "Sutter Health Park",
-  2602: "Great American Ball Park",
-  2680: "Petco Park",
-  2681: "Citizens Bank Park",
-  2889: "Busch Stadium",
-  3289: "Citi Field",
-  3309: "Nationals Park",
-  3312: "Target Field",
-  3313: "Yankee Stadium",
-  4169: "LoanDepot Park",
-  4705: "Truist Park",
-  5325: "Globe Life Field",
-};
 
 const lienWiki = (idStade) =>
   WIKI_STADES[idStade]
@@ -4479,7 +4131,7 @@ export default function App() {
   };
 
   const css = `
-    @import url('https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@500;700;800&family=Spectral:ital,wght@0,300;0,400;0,600;1,400&family=Space+Mono:wght@400;700&display=swap');
+${POLICES}
     @keyframes trace { to { stroke-dashoffset: 0; } }
     @keyframes rise { from { opacity:0; transform: translateY(10px);} to {opacity:1; transform:none;} }
     @keyframes pulse { 0%,100%{opacity:.35} 50%{opacity:1} }
