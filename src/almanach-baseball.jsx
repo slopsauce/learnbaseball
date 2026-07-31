@@ -604,7 +604,6 @@ async function saveState(patch) {
 /* ------------------------------------------------------------------ *
  *  Helpers
  * ------------------------------------------------------------------ */
-const iso = (d) => d.toISOString().slice(0, 10);
 const ordinal = (n) => (!n ? "?" : n === 1 ? "1re" : `${n}e`);
 
 function dateFR(s) {
@@ -1719,13 +1718,12 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
 
   return (
     <div
-      className="alm-rise"
+      className="alm-rise alm-detail"
       style={{
         background: "rgba(11,36,26,.9)", border: `1px solid ${T.clay}`,
         borderRadius: 3, padding: "12px 14px", margin: "2px 0 10px 74px",
         fontFamily: FF_MONO,
       }}
-      className="alm-detail"
     >
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
         <Img src={CAP(m.idExt)} alt="" size={24} />
@@ -2013,7 +2011,6 @@ function Pastille({ m, spoilers, suivi, largeur, hauteur, note, onOuvrir, ouvert
         height: hauteur - 4,
         padding: "3px 4px 0",
         borderRadius: 2,
-        boxSizing: "border-box",
         background: suivi ? "rgba(194,96,58,.9)" : "rgba(11,36,26,.85)",
         border: `1px solid ${
           ouvert ? T.chalk
@@ -2199,7 +2196,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     const ro = new ResizeObserver(([e]) => setPisteW(e.contentRect.width || 640));
     ro.observe(el);
     return () => ro.disconnect();
-  });
+    // Sans tableau de dependances, l'observateur etait reconstruit et
+    // redetache a CHAQUE rendu de la vue. La piste est montee une fois pour
+    // toutes : on ne s'abonne donc qu'au montage.
+  }, []);
   const largeur = Math.min(0.35, Math.max(0.05, PASTILLE_PX / pisteW));
   // Une ligne d'appoint (score ou note) fait grandir les pastilles.
 
@@ -3314,7 +3314,7 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
           />
         ))}
 
-        {points.map(({ id, s, eq, p }) => {
+        {points.map(({ id, eq, p }) => {
           const actif = actifs.has(id);
           const suivi = eq.some((t) => suivies.includes(t.id));
           const sel = choisi === id;
@@ -4168,9 +4168,12 @@ const ALIAS = {
 };
 const FRAGMENT = { nuits: "programme", carnet: "carnet", terrains: "terrains", direct: "direct" };
 
+/* La consultation passe par hasOwn : sans lui, « #constructor » ou
+   « #toString » remontent la chaine de prototypes et renvoient une fonction
+   en guise d'onglet. */
 function ongletDepuisFragment(brut) {
   const h = String(brut || "").replace(/^#\/?/, "").trim().toLowerCase().split("/")[0];
-  return ALIAS[h] || "carnet";
+  return Object.hasOwn(ALIAS, h) ? ALIAS[h] : "carnet";
 }
 
 /* Un fragment peut designer une cible dans l'onglet : #terrains/5325 ouvre
@@ -4179,6 +4182,31 @@ function ongletDepuisFragment(brut) {
 function cibleDepuisFragment(brut) {
   const bouts = String(brut || "").replace(/^#\/?/, "").trim().split("/");
   return bouts.length > 1 && bouts[1] ? bouts[1] : null;
+}
+
+/* Declare hors de App : un composant defini dans le corps du rendu est une
+   NOUVELLE fonction a chaque passage, donc un type d'element different pour
+   React, qui demonte et remonte le sous-arbre au lieu de le mettre a jour.
+   Sans etat interne ici, cela ne coutait que du travail inutile — mais c'est
+   la meme erreur qui fait perdre son contenu a un champ de saisie. */
+function Onglet({ id, actif, onChoisir, children }) {
+  return (
+    <button
+      className="alm-tab"
+      onClick={() => onChoisir(id)}
+      aria-current={actif ? "page" : undefined}
+      style={{
+        all: "unset", cursor: "pointer",
+        fontFamily: FF_DISPLAY, fontSize: 22, fontWeight: 700,
+        textTransform: "uppercase", letterSpacing: ".04em",
+        padding: "8px 0", marginRight: 24,
+        color: actif ? T.chalk : "rgba(147,166,151,.7)",
+        borderBottom: `2px solid ${actif ? T.clay : "transparent"}`,
+      }}
+    >
+      {children}
+    </button>
+  );
 }
 
 export default function App() {
@@ -4327,9 +4355,19 @@ export default function App() {
     @keyframes pulse { 0%,100%{opacity:.35} 50%{opacity:1} }
     .alm-rise { animation: rise 460ms cubic-bezier(.4,0,.2,1) both; }
     .alm-btn { transition: background-color .18s, color .18s, border-color .18s; }
-    .alm-btn:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 3px; }
-    .alm-cell:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 2px; }
-    .alm-tab:focus-visible { outline: 2px solid ${T.sodium}; outline-offset: 3px; }
+
+    /* Anneau de focus, au clavier uniquement.
+       Le « !important » n'est pas une precaution : la plupart de ces boutons
+       portent « all: unset » en style INLINE, ce qui remet outline a zero — et
+       une declaration inline l'emporte sur la feuille de style. Sans lui la
+       regle s'appliquait bien (le selecteur matche) mais l'outline calcule
+       restait « none » : aucun repere visible au clavier, nulle part.
+       La regle vise le conteneur plutot qu'une liste de classes, pour couvrir
+       aussi les boutons qui n'en portent aucune. */
+    .alm-page :is(button, select, input, a):focus-visible {
+      outline: 2px solid ${T.sodium} !important;
+      outline-offset: 2px !important;
+    }
     select.alm-sel { -webkit-appearance:none; appearance:none; }
 
     /* Zone tactile etendue sans toucher a la mise en page : le pseudo-element
@@ -4351,24 +4389,6 @@ export default function App() {
   `;
 
   const mow = `repeating-linear-gradient(115deg, ${T.turf} 0 46px, ${T.turfLit} 46px 92px)`;
-
-  const Onglet = ({ id, children }) => (
-    <button
-      className="alm-tab"
-      onClick={() => changerOnglet(id)}
-      aria-current={onglet === id ? "page" : undefined}
-      style={{
-        all: "unset", cursor: "pointer",
-        fontFamily: FF_DISPLAY, fontSize: 22, fontWeight: 700,
-        textTransform: "uppercase", letterSpacing: ".04em",
-        padding: "8px 0", marginRight: 24,
-        color: onglet === id ? T.chalk : "rgba(147,166,151,.7)",
-        borderBottom: `2px solid ${onglet === id ? T.clay : "transparent"}`,
-      }}
-    >
-      {children}
-    </button>
-  );
 
   return (
     <div style={{ background: mow, minHeight: "100%", color: T.chalk, fontFamily: FF_BODY }}>
@@ -4415,10 +4435,16 @@ export default function App() {
             borderBottom: "1px solid rgba(239,243,234,.22)", margin: "16px 0 22px",
           }}
         >
-          <Onglet id="carnet">Le carnet</Onglet>
-          <Onglet id="nuits">Le programme</Onglet>
-          <Onglet id="terrains">Les terrains</Onglet>
-          <Onglet id="direct">Le direct</Onglet>
+          {[
+            ["carnet", "Le carnet"],
+            ["nuits", "Le programme"],
+            ["terrains", "Les terrains"],
+            ["direct", "Le direct"],
+          ].map(([id, libelle]) => (
+            <Onglet key={id} id={id} actif={onglet === id} onChoisir={changerOnglet}>
+              {libelle}
+            </Onglet>
+          ))}
         </nav>
 
         {onglet === "direct" ? (

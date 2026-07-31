@@ -2,11 +2,6 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import * as A from "../.test-bundle.mjs";
 
-const PARIS = "Europe/Paris";
-/* Fabrique un instant UTC a partir d'une heure de New York, pour raisonner
-   comme le calendrier MLB. */
-const depuisNY = (iso) => new Date(new Date(`${iso}`).toISOString()).toISOString();
-
 describe("nuitDe — decoupage en nuits parisiennes", () => {
   test("un match du soir americain bascule au petit matin a Paris", () => {
     // 19h10 a New York le 26 juillet = 01h10 a Paris le 27
