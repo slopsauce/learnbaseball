@@ -47,7 +47,13 @@ const BASE =
   (typeof import.meta !== "undefined" && import.meta.env?.BASE_URL) || "/";
 
 const POLICES = [
-  ["Big Shoulders Display", "big-shoulders-display-var", "normal", "400 800"],
+  /* Plage 500-800, et non 400-800 : l'import Google ne declarait que 500, 700
+     et 800. Trois usages de FF_DISPLAY ne fixent aucune graisse et heritent
+     donc de 400 — que l'appariement CSS ramenait au 500 le plus proche. Ouvrir
+     la plage a 400 les aurait subtilement allegis. La borne basse reproduit le
+     rendu qui a ete publie ; c'est une contrainte de fidelite, pas un reglage
+     typographique. */
+  ["Big Shoulders Display", "big-shoulders-display-var", "normal", "500 800"],
   ["Spectral", "spectral-400", "normal", "400"],
   ["Spectral", "spectral-400-italic", "italic", "400"],
   // Pas de Spectral gras : les quatre <strong> de l'application sont tous
