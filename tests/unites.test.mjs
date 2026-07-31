@@ -1206,3 +1206,106 @@ describe("classification de l'état d'un match", () => {
     }
   });
 });
+
+describe("date de reference : Paris et non UTC", () => {
+  /* `toISOString().slice(0,10)` donne la date UTC. Entre minuit et 02h l'ete,
+     c'est encore la veille a Paris — et toute la fenetre de nuits glissait
+     d'un cran, precisement aux heures ou l'on consulte. */
+  const a = (iso) => new Date(iso);
+
+  test("00h30 à Paris en été est déjà le lendemain", () => {
+    // 2026-07-31T22:30Z = 2026-08-01 00h30 à Paris (UTC+2)
+    const d = a("2026-07-31T22:30:00Z");
+    assert.equal(A.jourParis(d), "2026-08-01");
+    assert.equal(d.toISOString().slice(0, 10), "2026-07-31", "l'ancienne base UTC");
+  });
+
+  test("01h10 à Paris en hiver aussi", () => {
+    // 2026-01-15T00:10Z = 01h10 à Paris (UTC+1)
+    assert.equal(A.jourParis(a("2026-01-15T00:10:00Z")), "2026-01-15");
+  });
+
+  test("23h en été reste le jour courant", () => {
+    assert.equal(A.jourParis(a("2026-07-31T21:00:00Z")), "2026-07-31");
+  });
+
+  test("juste avant minuit à Paris, la date n'a pas encore tourné", () => {
+    // 2026-07-31T21:59Z = 23h59 à Paris
+    assert.equal(A.jourParis(a("2026-07-31T21:59:00Z")), "2026-07-31");
+  });
+});
+
+describe("statut HTTP des reponses de l'API", () => {
+  /* Une reponse d'erreur reste tres souvent du JSON valide : sans controle du
+     statut, un 500 se lisait comme une reponse vide et l'ecran annoncait
+     « aucun match » au lieu de signaler la panne. */
+  const avecFetch = async (faux, fn) => {
+    const vrai = globalThis.fetch;
+    globalThis.fetch = faux;
+    try { return await fn(); } finally { globalThis.fetch = vrai; }
+  };
+  const rep = (statut, corps) =>
+    new Response(JSON.stringify(corps), { status: statut, headers: { "content-type": "application/json" } });
+
+  test("une reponse 200 renvoie le JSON", async () => {
+    const d = await avecFetch(async () => rep(200, { dates: [1, 2] }), () => A.jsonMlb("http://x"));
+    assert.deepEqual(d.dates, [1, 2]);
+  });
+
+  test("un 500 avec du JSON valide leve malgre tout", async () => {
+    await avecFetch(async () => rep(500, { message: "boom" }), async () => {
+      await assert.rejects(() => A.jsonMlb("http://x"), /500/);
+    });
+  });
+
+  test("un 404 leve aussi", async () => {
+    await avecFetch(async () => rep(404, {}), async () => {
+      await assert.rejects(() => A.jsonMlb("http://x"), /404/);
+    });
+  });
+});
+
+describe("garde-fou de rendu", () => {
+  /* `renderToString` ne declenche pas les frontieres d'erreur : on teste donc
+     le contrat de la classe directement — c'est lui qui compte. Le
+     comportement complet a ete verifie au navigateur, sur un rendu qui leve
+     pour de vrai (champ `innings` renvoye sous une autre forme). */
+  test("une erreur de rendu devient un etat, pas une page blanche", () => {
+    const e = new Error("boum");
+    assert.deepEqual(A.Garde.getDerivedStateFromError(e), { erreur: e });
+  });
+
+  test("sans erreur, la garde est transparente", () => {
+    const g = new A.Garde({ children: "CONTENU" });
+    assert.equal(g.render(), "CONTENU");
+  });
+
+  test("avec une erreur, elle rend un repli qui nomme la panne", () => {
+    const g = new A.Garde({ children: "CONTENU" });
+    g.state = { erreur: new Error("champ disparu") };
+    const arbre = JSON.stringify(g.render());
+    assert.match(arbre, /interrompue/, "le repli doit expliquer ce qui se passe");
+    assert.match(arbre, /champ disparu/, "et rapporter la cause");
+    assert.doesNotMatch(arbre, /CONTENU/, "l'arbre fautif ne doit plus etre rendu");
+  });
+
+  test("changer d'onglet rearme la garde", () => {
+    const g = new A.Garde({ cle: "carnet" });
+    g.state = { erreur: new Error("x") };
+    const vus = [];
+    g.setState = (s) => vus.push(s);
+    g.props = { cle: "nuits" };
+    g.componentDidUpdate({ cle: "carnet" });
+    assert.deepEqual(vus, [{ erreur: null }], "sans cela, une vue en panne condamnerait les autres");
+  });
+
+  test("mais un rendu de la meme vue ne l'efface pas toute seule", () => {
+    const g = new A.Garde({ cle: "carnet" });
+    g.state = { erreur: new Error("x") };
+    const vus = [];
+    g.setState = (s) => vus.push(s);
+    g.props = { cle: "carnet" };
+    g.componentDidUpdate({ cle: "carnet" });
+    assert.deepEqual(vus, [], "sinon la garde boucle sur l'erreur");
+  });
+});

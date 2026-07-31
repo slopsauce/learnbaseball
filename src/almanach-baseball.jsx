@@ -606,6 +606,26 @@ async function saveState(patch) {
  * ------------------------------------------------------------------ */
 const ordinal = (n) => (!n ? "?" : n === 1 ? "1re" : `${n}e`);
 
+const TZ = "Europe/Paris";
+
+/* La date du jour a Paris, en AAAA-MM-JJ.
+   `new Date().toISOString().slice(0,10)` donne la date UTC : entre minuit et
+   02h l'ete, c'est encore la veille. Le reste du fichier raisonne en nuits
+   parisiennes, donc melanger les deux bases decalait la fenetre d'un cran
+   pendant deux heures chaque nuit — exactement les heures ou l'on consulte. */
+const jourParis = (d = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(d);
+
+/* Une reponse d'erreur reste tres souvent du JSON valide. Sans controle du
+   statut, un 500 se lit comme une reponse vide : le carnet annoncait « aucun
+   match termine » et le programme une nuit sans match, au lieu de dire que
+   l'API est tombee. On leve, et chaque appelant decide s'il rattrape. */
+async function jsonMlb(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText || ""}`.trim());
+  return r.json();
+}
+
 function dateFR(s) {
   try {
     return new Date(s).toLocaleDateString("fr-FR", {
@@ -688,12 +708,11 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
     setPhase("load");
     setErreur("");
     try {
-      const fin = new Date();
-      const debut = new Date(Date.now() - 12 * 864e5);
-      const sch = await fetch(
-        `${API}/schedule?sportId=1&teamId=${tid}&startDate=${debut.toISOString().slice(0, 10)}` +
-          `&endDate=${fin.toISOString().slice(0, 10)}`
-      ).then((r) => r.json());
+      const sch = await jsonMlb(
+        `${API}/schedule?sportId=1&teamId=${tid}` +
+          `&startDate=${jourParis(new Date(Date.now() - 12 * 864e5))}` +
+          `&endDate=${jourParis()}`
+      );
 
       // Un match reporte porte abstractGameState "Final" alors qu'il n'a jamais
       // ete joue : allPlays est vide et winProbability repond 404. Environ 3 %
@@ -714,8 +733,10 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
       let g = null, vues = [];
       for (const candidat of finis.slice(0, 3)) {
         const [pbp, content] = await Promise.all([
-          fetch(`${API}/game/${candidat.gamePk}/playByPlay`).then((r) => r.json()),
-          fetch(`${API}/game/${candidat.gamePk}/content`).then((r) => r.json()).catch(() => null),
+          jsonMlb(`${API}/game/${candidat.gamePk}/playByPlay`),
+          // Le contenu video est un bonus : son absence ne doit pas priver
+          // l'utilisateur de la fiche.
+          jsonMlb(`${API}/game/${candidat.gamePk}/content`).catch(() => null),
         ]);
         const trouve = detectSightings(pbp.allPlays || [], indexerClips(content));
         if (trouve.length) {
@@ -1287,7 +1308,8 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
  *  68 % des matchs changent de date entre le calendrier MLB et le
  *  calendrier parisien — d'ou le regroupement par NUIT, pas par jour.
  * ================================================================== */
-const TZ = "Europe/Paris";
+/* TZ et jourParis sont declares avec les helpers, en tete : les deux vues
+   qui precedent s'en servent aussi. */
 const DEBUT = 17;          // bord gauche de la piste, en heures
 const FIN = 31;            // bord droit (07h le lendemain)
 const AUBE = 7;            // avant 7h, on appartient a la nuit precedente
@@ -1566,11 +1588,15 @@ function Lanceur({ id, nom, st }) {
    l'accueillent (la ligne de situation et la rangee d'etiquettes). */
 function Glose({ texte, children, style }) {
   const [ouvert, setOuvert] = useState(false);
+  // `aria-expanded` seul annonce un controle deplie sans dire de quoi : il faut
+  // designer la cible, donc lui donner un identifiant unique a l'instance.
+  const id = React.useId();
   return (
     <>
       <button
         onClick={() => setOuvert(!ouvert)}
         aria-expanded={ouvert}
+        aria-controls={id}
         title={texte}
         style={{ all: "unset", cursor: "help", ...style }}
       >
@@ -1578,6 +1604,7 @@ function Glose({ texte, children, style }) {
       </button>
       {ouvert && (
         <span
+          id={id}
           style={{
             flexBasis: "100%", fontFamily: FF_BODY, fontSize: 12.5,
             color: T.chalk, lineHeight: 1.45, marginTop: 5,
@@ -2186,8 +2213,8 @@ function BandeauSituation({ situation, spoilers, onAfficher }) {
   );
 }
 
-function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {} }) {
-  const [ancre, setAncre] = useState(() => decalerJour(new Date().toISOString().slice(0, 10), -1));
+function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null }) {
+  const [ancre, setAncre] = useState(() => decalerJour(jourParis(), -1));
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
   const [erreur, setErreur] = useState("");
@@ -2229,11 +2256,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     // On tire une journee MLB de plus : une nuit parisienne deborde sur le
     // lendemain americain. On volontairement PAS `broadcasts` (x3 le poids
     // pour des diffuseurs americains inutiles depuis la France).
-    fetch(
+    jsonMlb(
       `${API}/schedule?sportId=1&startDate=${ancre}&endDate=${decalerJour(ancre, NB_NUITS)}` +
         `&hydrate=team,probablePitcher`
     )
-      .then((r) => r.json())
       .then((d) => {
         if (annule) return;
         const out = [];
@@ -2379,12 +2405,11 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     let annule = false;
     const tirer = () => {
       const jour = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date());
-      fetch(
+      jsonMlb(
         `${API}/schedule?sportId=1&date=${jour}&hydrate=linescore` +
           `&fields=dates,games,gamePk,status,abstractGameState,linescore,` +
           `currentInningOrdinal,inningState,outs,teams,home,away,runs`
       )
-        .then((r) => r.json())
         .then((d) => {
           if (annule) return;
           const m = {};
@@ -2484,8 +2509,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     if (!idsLanceurs) return;
     let annule = false;
     const saison = new Date().getFullYear();
-    fetch(`${API}/people?personIds=${idsLanceurs}&hydrate=stats(group=pitching,type=season,season=${saison})`)
-      .then((r) => r.json())
+    jsonMlb(`${API}/people?personIds=${idsLanceurs}&hydrate=stats(group=pitching,type=season,season=${saison})`)
       .then((d) => {
         if (annule) return;
         const m = {};
@@ -2505,8 +2529,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     const m = matchOuvert;
     if (!m || m.etat !== "Final" || m.reporte || resumes[m.id] !== undefined) return;
     let annule = false;
-    fetch(`${API}/game/${m.id}/content`)
-      .then((r) => r.json())
+    jsonMlb(`${API}/game/${m.id}/content`)
       .then((c) => !annule && setResumes((x) => ({ ...x, [m.id]: extraireResumes(c) })))
       .catch(() => !annule && setResumes((x) => ({ ...x, [m.id]: null })));
     return () => {
@@ -2546,7 +2569,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
       await Promise.all(
         paquet.map(async (pk) => {
           try {
-            const w = await fetch(`${API}/game/${pk}/winProbability?${CHAMPS_WP}`).then((r) => r.json());
+            const w = await jsonMlb(`${API}/game/${pk}/winProbability?${CHAMPS_WP}`);
             trouve[pk] = (Array.isArray(w) ? w : []).reduce(
               (a, x) => a + Math.abs(x.homeTeamWinProbabilityAdded || 0),
               0
@@ -2577,7 +2600,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         </button>
         <button
           className="alm-btn"
-          onClick={() => setAncre(decalerJour(new Date().toISOString().slice(0, 10), -1))}
+          onClick={() => setAncre(decalerJour(jourParis(), -1))}
           style={btnStyle(false)}
         >
           aujourd'hui
@@ -2795,6 +2818,21 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                 </div>
               )}
             </div>
+          )}
+
+          {/* Hors saison, les bilans viennent de l'annee precedente : le dire,
+              sinon les cotes et le classement passent pour l'actualite. */}
+          {saisonBilans != null && saisonBilans !== new Date().getFullYear() && (
+            <p
+              style={{
+                fontFamily: FF_MONO, fontSize: 10.5, color: T.sodium,
+                border: "1px dashed rgba(242,206,107,.45)", borderRadius: 3,
+                padding: "8px 12px", margin: "0 0 18px", lineHeight: 1.5,
+              }}
+            >
+              Hors saison : bilans, cotes et classement sont ceux de {saisonBilans}, à leur
+              dernier jour. Ils ne décrivent pas une course en cours.
+            </p>
           )}
 
           {/* --- la situation au classement --- */}
@@ -3242,21 +3280,16 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
   /* Les matchs de la nuit en cours, pour allumer les parcs concernes et
      tracer les deplacements. Requete minimale : deux journees, champs filtres. */
   useEffect(() => {
-    const iso = (d) => d.toISOString().slice(0, 10);
-    const auj = new Date();
-    const veille = new Date(Date.now() - 864e5);
     let annule = false;
-    fetch(
-      `${API}/schedule?sportId=1&startDate=${iso(veille)}&endDate=${iso(auj)}` +
+    jsonMlb(
+      `${API}/schedule?sportId=1&startDate=${jourParis(new Date(Date.now() - 864e5))}&endDate=${jourParis()}` +
         `&fields=dates,games,gamePk,gameDate,status,abstractGameState,codedGameState,doubleHeader,teams,home,away,team,id,venue,id`
     )
-      .then((r) => r.json())
       .then((d) => {
         if (annule) return;
         const n = new Date();
         const h = Number(new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(n));
-        const jour = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
-        const nuit = h < AUBE ? decalerJour(jour, -1) : jour;
+        const nuit = h < AUBE ? decalerJour(jourParis(n), -1) : jourParis(n);
         const out = [];
         for (const jr of d.dates || [])
           for (const g of jr.games || []) {
@@ -3782,10 +3815,9 @@ function VueDirect({ teams, suivies = [] }) {
   useEffect(() => {
     let annule = false;
     const tirer = () => {
-      const iso = new Date().toISOString().slice(0, 10);
-      const veille = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
-      fetch(`${API}/schedule?sportId=1&startDate=${veille}&endDate=${iso}&hydrate=team`)
-        .then((r) => r.json())
+      const auj = jourParis();
+      const veille = jourParis(new Date(Date.now() - 864e5));
+      jsonMlb(`${API}/schedule?sportId=1&startDate=${veille}&endDate=${auj}&hydrate=team`)
         .then((d) => {
           if (annule) return;
           // On garde les matchs en cours ET ceux de la nuit ecoulee : le cas
@@ -3841,8 +3873,8 @@ function VueDirect({ teams, suivies = [] }) {
     let annule = false;
     const tirer = () => {
       Promise.all([
-        fetch(`https://statsapi.mlb.com/api/v1.1/game/${choisi}/feed/live?fields=${CHAMPS_DIRECT}`).then((r) => r.json()),
-        fetch(`${API}/game/${choisi}/contextMetrics`).then((r) => r.json()).catch(() => null),
+        jsonMlb(`https://statsapi.mlb.com/api/v1.1/game/${choisi}/feed/live?fields=${CHAMPS_DIRECT}`),
+        jsonMlb(`${API}/game/${choisi}/contextMetrics`).catch(() => null),
       ])
         .then(([f, c]) => {
           if (annule) return;
@@ -3870,8 +3902,7 @@ function VueDirect({ teams, suivies = [] }) {
     if (!choisi || !spoilers) return;
     let annule = false;
     const tirer = () =>
-      fetch(`https://statsapi.mlb.com/api/v1.1/game/${choisi}/feed/live?fields=${CHAMPS_HISTOIRE}`)
-        .then((r) => r.json())
+      jsonMlb(`https://statsapi.mlb.com/api/v1.1/game/${choisi}/feed/live?fields=${CHAMPS_HISTOIRE}`)
         .then((d) => !annule && setHistoire(d?.liveData?.plays?.allPlays || []))
         .catch(() => {});
     tirer();
@@ -4218,6 +4249,50 @@ function cibleDepuisFragment(brut) {
   return bouts.length > 1 && bouts[1] ? bouts[1] : null;
 }
 
+/* ------------------------------------------------------------------ *
+ *  GARDE-FOU DE RENDU
+ *  Sans elle, une seule exception dans n'importe quelle vue vide la page :
+ *  React 16+ demonte tout l'arbre plutot que de laisser une interface a
+ *  moitie fausse. Les donnees viennent d'une API non contractuelle, donc un
+ *  champ disparu suffit. On perd l'onglet fautif, pas l'application.
+ *  Une classe, obligatoirement : c'est la seule forme qui capte les erreurs
+ *  de rendu — il n'existe pas d'equivalent avec les hooks.
+ * ------------------------------------------------------------------ */
+class Garde extends React.Component {
+  constructor(p) {
+    super(p);
+    this.state = { erreur: null };
+  }
+  static getDerivedStateFromError(erreur) {
+    return { erreur };
+  }
+  componentDidUpdate(avant) {
+    // Changer d'onglet doit reessayer : sinon l'erreur d'une vue condamne
+    // toutes les autres jusqu'au rechargement.
+    if (avant.cle !== this.props.cle && this.state.erreur) this.setState({ erreur: null });
+  }
+  render() {
+    if (!this.state.erreur) return this.props.children;
+    return (
+      <div style={{ border: `1px solid ${T.clay}`, borderRadius: 3, padding: 18 }}>
+        <p style={{ margin: 0, fontSize: 15 }}>
+          Cette vue s'est interrompue. Les autres onglets fonctionnent toujours.
+        </p>
+        <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, margin: "8px 0 14px" }}>
+          {String(this.state.erreur?.message || this.state.erreur)}
+        </p>
+        <button
+          className="alm-btn"
+          onClick={() => this.setState({ erreur: null })}
+          style={btnStyle(true)}
+        >
+          Réessayer
+        </button>
+      </div>
+    );
+  }
+}
+
 /* Declare hors de App : un composant defini dans le corps du rendu est une
    NOUVELLE fonction a chaque passage, donc un type d'element different pour
    React, qui demonte et remonte le sous-arbre au lieu de le mettre a jour.
@@ -4290,47 +4365,69 @@ export default function App() {
   // Bilans victoires/defaites : une seule requete pour les 30 equipes,
   // base de la cote de rencontre (log5).
   const [bilans, setBilans] = useState({});
+  const [saisonBilans, setSaisonBilans] = useState(null);
   useEffect(() => {
-    const saison = new Date().getFullYear();
-    fetch(
-      `${API}/standings?leagueId=103,104&season=${saison}&standingsTypes=regularSeason` +
-        `&fields=records,teamRecords,team,id,wins,losses,gamesBack,wildCardGamesBack,` +
-        `divisionRank,divisionLeader,magicNumber,eliminationNumber,clinched,` +
-        `streak,streakCode,streakNumber,streakType`
-    )
-      .then((r) => r.json())
-      .then((d) => {
-        const m = {};
-        for (const rec of d.records || []) {
-          for (const tr of rec.teamRecords || []) {
-            const n = (tr.wins || 0) + (tr.losses || 0);
-            if (n <= 0) continue;
-            // L'API renvoie "-" plutot que null quand la valeur ne s'applique pas.
-            const nb = (x) => (x == null || x === "-" ? null : Number(x));
-            m[tr.team.id] = {
-              v: tr.wins,
-              d: tr.losses,
-              pct: tr.wins / n,
-              rang: tr.divisionRank ? Number(tr.divisionRank) : null,
-              meneur: !!tr.divisionLeader,
-              retard: nb(tr.gamesBack),
-              wc: nb(tr.wildCardGamesBack),
-              magique: nb(tr.magicNumber),
-              elimination: nb(tr.eliminationNumber),
-              clinche: !!tr.clinched,
-              serieType: tr.streak?.streakType,
-              serieNb: tr.streak?.streakNumber || 0,
-            };
-          }
+    let annule = false;
+
+    const lire = (d) => {
+      const m = {};
+      for (const rec of d.records || []) {
+        for (const tr of rec.teamRecords || []) {
+          const n = (tr.wins || 0) + (tr.losses || 0);
+          if (n <= 0) continue;
+          // L'API renvoie "-" plutot que null quand la valeur ne s'applique pas.
+          const nb = (x) => (x == null || x === "-" ? null : Number(x));
+          m[tr.team.id] = {
+            v: tr.wins,
+            d: tr.losses,
+            pct: tr.wins / n,
+            rang: tr.divisionRank ? Number(tr.divisionRank) : null,
+            meneur: !!tr.divisionLeader,
+            retard: nb(tr.gamesBack),
+            wc: nb(tr.wildCardGamesBack),
+            magique: nb(tr.magicNumber),
+            elimination: nb(tr.eliminationNumber),
+            clinche: !!tr.clinched,
+            serieType: tr.streak?.streakType,
+            serieNb: tr.streak?.streakNumber || 0,
+          };
         }
+      }
+      return m;
+    };
+
+    const tirer = (saison) =>
+      jsonMlb(
+        `${API}/standings?leagueId=103,104&season=${saison}&standingsTypes=regularSeason` +
+          `&fields=records,teamRecords,team,id,wins,losses,gamesBack,wildCardGamesBack,` +
+          `divisionRank,divisionLeader,magicNumber,eliminationNumber,clinched,` +
+          `streak,streakCode,streakNumber,streakType`
+      ).then(lire);
+
+    /* De fin octobre a fin mars, la saison en cours n'a aucun match joue :
+       l'API repond, mais tous les bilans sont a 0-0 et `lire` les ecarte.
+       Sans repli, cotes, classement et enjeux disparaissaient tout l'hiver
+       sans un mot d'explication. On retombe sur la derniere saison jouee — et
+       on le DIT a l'ecran : un classement final n'est pas un classement du
+       jour, le laisser croire serait pire que de ne rien montrer. */
+    const saison = new Date().getFullYear();
+    tirer(saison)
+      .then((m) =>
+        Object.keys(m).length
+          ? { m, saison }
+          : tirer(saison - 1).then((v) => ({ m: v, saison: saison - 1 }))
+      )
+      .then(({ m, saison: s }) => {
+        if (annule || !Object.keys(m).length) return;
         setBilans(m);
+        setSaisonBilans(s);
       })
       .catch(() => {});
+    return () => { annule = true; };
   }, []);
 
   useEffect(() => {
-    fetch(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation,venue,division`)
-      .then((r) => r.json())
+    jsonMlb(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation,venue,division`)
       .then((d) => setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name))))
       .catch(() => {});
   }, []);
@@ -4345,8 +4442,7 @@ export default function App() {
      Une requete de 33 Ko pour les 59 parcs, qui alimente les anecdotes. */
   const [stades, setStades] = useState({});
   useEffect(() => {
-    fetch(`${API}/venues?sportId=1&hydrate=location,fieldInfo`)
-      .then((r) => r.json())
+    jsonMlb(`${API}/venues?sportId=1&hydrate=location,fieldInfo`)
       .then((d) => {
         const m = {};
         for (const v of d.venues || []) {
@@ -4481,6 +4577,8 @@ export default function App() {
           ))}
         </nav>
 
+        {/* `cle` remet la garde a zero au changement d'onglet. */}
+        <Garde cle={onglet}>
         {onglet === "direct" ? (
           <VueDirect teams={teams} suivies={suivies} />
         ) : onglet === "terrains" ? (
@@ -4500,9 +4598,11 @@ export default function App() {
             setSuivies={majSuivies}
             stadeHabituel={stadeHabituel}
             bilans={bilans}
+            saisonBilans={saisonBilans}
             stades={stades}
           />
         )}
+        </Garde>
 
         <footer
           style={{
@@ -4569,4 +4669,6 @@ export {
   // vue « le carnet »
   VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,
+  // garde-fous transverses
+  Garde, jourParis, jsonMlb, TZ,
 };
