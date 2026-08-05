@@ -1309,3 +1309,98 @@ describe("garde-fou de rendu", () => {
     assert.deepEqual(vus, [], "sinon la garde boucle sur l'erreur");
   });
 });
+
+describe("avertissements d'avant-match", () => {
+  const T0 = Date.parse("2026-08-05T23:40:00Z"); // heure prevue du premier lancer
+  const min = (n) => T0 + n * 60e3;
+
+  // « code » est codedGameState et « detail » detailedState. S = prevu,
+  // P = avant-match, I = en cours.
+  const jeu = (o = {}) => [{
+    id: 823753, debut: new Date(T0).toISOString(),
+    ext: "Cubs", dom: "Reds", idExt: 112, idDom: 113, idSuivi: 112,
+    code: "S", detail: "Scheduled", ...o,
+  }];
+
+  const types = (matchs, deja, quand) =>
+    A.notificationsADeclencher(matchs, new Set(deja), quand).map((a) => a.type);
+
+  test("le rappel tombe dans le quart d'heure, pas avant", () => {
+    assert.deepEqual(types(jeu(), [], min(-16)), []);
+    assert.deepEqual(types(jeu(), [], min(-15)), ["rappel"]);
+    assert.deepEqual(types(jeu(), [], min(-1)), ["rappel"]);
+  });
+
+  test("le rappel dit le temps qu'il reste vraiment", () => {
+    // Ouvrir la page a T-8 ne doit pas annoncer un quart d'heure fictif.
+    const [a] = A.notificationsADeclencher(jeu(), new Set(), min(-8));
+    assert.match(a.corps, /dans 8 min/);
+  });
+
+  test("l'echauffement ne compte pas pour la premiere balle", () => {
+    // Le coeur du sujet : l'API met deja « Live » dans abstractGameState
+    // pendant l'echauffement. Seul codedGameState separe les deux.
+    const echauffe = jeu({ code: "P", detail: "Warmup" });
+    assert.deepEqual(types(echauffe, [], min(-35)), ["echauffement"]);
+    assert.deepEqual(types(jeu({ code: "I", detail: "In Progress" }), [], min(2)), ["premiere"]);
+  });
+
+  test("l'echauffement n'empeche pas le rappel qui le suit", () => {
+    // Les echauffements commencent une demi-heure avant le premier lancer,
+    // donc AVANT le rappel : une chaine exclusive aurait avale celui-ci.
+    const echauffe = jeu({ code: "P", detail: "Warmup" });
+    assert.deepEqual(types(echauffe, [], min(-35)), ["echauffement"]);
+    assert.deepEqual(types(echauffe, ["823753:echauffement"], min(-12)), ["rappel"]);
+  });
+
+  test("arriver en retard ne declenche rien de perime", () => {
+    // Ouvrir la page a 3h du matin ne doit pas annoncer la premiere balle
+    // d'un match entame depuis deux heures.
+    assert.deepEqual(types(jeu({ code: "I", detail: "In Progress" }), [], min(120)), []);
+    assert.deepEqual(types(jeu({ code: "P", detail: "Warmup" }), [], min(30)), []);
+    // Ni le rappel d'un match deja commence.
+    assert.deepEqual(types(jeu({ code: "I", detail: "In Progress" }), [], min(1)), ["premiere"]);
+  });
+
+  test("un avertissement deja servi ne repart pas", () => {
+    assert.deepEqual(types(jeu(), ["823753:rappel"], min(-10)), []);
+  });
+
+  test("un match qui ne se jouera pas se tait", () => {
+    for (const detail of ["Postponed", "Cancelled", "Suspended: Rain"])
+      assert.deepEqual(types(jeu({ detail }), [], min(-10)), [], detail);
+    // Un depart differe reste un match a voir : il ne doit PAS etre ecarte.
+    assert.deepEqual(types(jeu({ code: "P", detail: "Delayed Start" }), [], min(-10)), ["rappel"]);
+  });
+
+  test("le clic mene la ou il y a quelque chose a voir", () => {
+    const [r] = A.notificationsADeclencher(jeu(), new Set(), min(-10));
+    assert.equal(r.cible, "programme");
+    const [p] = A.notificationsADeclencher(
+      jeu({ code: "I", detail: "In Progress" }), new Set(), min(2));
+    assert.equal(p.cible, "direct");
+  });
+
+  test("un seul fil de notification par match", () => {
+    const [r] = A.notificationsADeclencher(jeu(), new Set(), min(-10));
+    assert.equal(r.tag, "823753", "sans tag commun, les trois avertissements s'empilent");
+    assert.equal(r.idEquipe, 112, "l'icone porte la casquette de l'equipe suivie");
+  });
+
+  test("tolere les donnees manquantes", () => {
+    assert.deepEqual(A.notificationsADeclencher([], new Set(), T0), []);
+    assert.deepEqual(A.notificationsADeclencher(jeu({ debut: null }), new Set(), T0), []);
+    assert.deepEqual(A.notificationsADeclencher(jeu({ debut: "n'importe quoi" }), new Set(), T0), []);
+    assert.doesNotThrow(() => A.notificationsADeclencher(jeu(), undefined, T0));
+  });
+
+  test("la memoire des avertissements servis se purge", () => {
+    const vues = {
+      "1:rappel": "2026-08-05",
+      "2:rappel": "2026-08-03",  // trois jours : dehors
+      "3:rappel": "2026-08-04",  // deux jours : la limite, on garde
+    };
+    assert.deepEqual(Object.keys(A.purgerVues(vues, "2026-08-06")).sort(), ["1:rappel", "3:rappel"]);
+    assert.deepEqual(A.purgerVues(undefined, "2026-08-06"), {});
+  });
+});

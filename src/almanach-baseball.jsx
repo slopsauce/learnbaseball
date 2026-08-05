@@ -305,7 +305,7 @@ function Losange({ concept, size = 92, animate = false, muted = false }) {
  *  Stockage — localStorage, cloisonne par ORIGINE (pas par chemin) :
  *  tous tes projets sur <toi>.github.io partagent le meme espace.
  * ------------------------------------------------------------------ */
-const ETAT_VIDE = { appris: [], suivies: [119] };
+const ETAT_VIDE = { appris: [], suivies: [119], notifs: false, notifsVues: {} };
 
 async function loadState() {
   try {
@@ -1667,6 +1667,138 @@ function compteARebours(debut, maintenant = Date.now()) {
 }
 
 /* ---------------------------------------------------------------- *
+ *  AVERTISSEMENTS D'AVANT-MATCH
+ *  Trois par match d'une equipe suivie — le quart d'heure, l'echauffement,
+ *  la premiere balle — et rien apres. Aucun n'a donc de score a reveler :
+ *  la mecanique anti-spoiler du reste de l'application n'a pas a etre
+ *  rejouee ici.
+ *
+ *  Le statut arrive sous DEUX formes qui ne disent pas la meme chose.
+ *  `abstractGameState` bascule sur « Live » des l'echauffement :
+ *
+ *    {"abstractGameState":"Live","codedGameState":"P","detailedState":"Warmup"}
+ *    {"abstractGameState":"Live","codedGameState":"I","detailedState":"In Progress"}
+ *
+ *  `m.etat === "Live"` — le test employe partout ailleurs dans ce fichier —
+ *  ne separe donc PAS l'echauffement du jeu. S'en servir ici annoncerait la
+ *  premiere balle une demi-heure trop tot. On lit `codedGameState`.
+ * ---------------------------------------------------------------- */
+const AVANT_MATCH = 15 * 60e3;
+
+/* Ouvrir la page a 3 h du matin ne doit pas annoncer l'echauffement d'un match
+   entame depuis deux heures. Chaque avertissement se perime donc, compte a
+   partir de l'heure prevue du premier lancer. */
+const PEREMPTION = { echauffement: 5 * 60e3, premiere: 10 * 60e3 };
+
+/* Un match qui ne se jouera pas ce soir n'a rien a annoncer. « Delayed Start »
+   n'en fait pas partie : la rencontre aura bien lieu, plus tard. */
+const SANS_SUITE = ["Postponed", "Cancelled", "Suspended"];
+
+/* Rend la liste des avertissements a emettre maintenant, deja debarrassee de
+   ceux qui l'ont ete. `deja` est l'ensemble des cles servies, y compris celles
+   restaurees du stockage : un F5 ne rejoue pas la soiree. */
+function notificationsADeclencher(matchs, deja = new Set(), maintenant = Date.now()) {
+  const sortie = [];
+  for (const m of matchs) {
+    if (!m.debut) continue;
+    if (SANS_SUITE.some((s) => (m.detail || "").startsWith(s))) continue;
+    const t = new Date(m.debut).getTime();
+    if (!Number.isFinite(t)) continue;
+    const depuis = maintenant - t; // negatif tant que le match n'a pas commence
+
+    /* Par priorite decroissante, et surtout PAS en `else if` : l'echauffement
+       commence trente minutes avant le premier lancer, donc bien avant le
+       rappel du quart d'heure. Une chaine exclusive aurait retenu
+       l'echauffement a chaque tour et le rappel ne serait jamais tombe. */
+    const candidats = [];
+    if (m.code === "I" && depuis < PEREMPTION.premiere)
+      candidats.push(["premiere", "C'est parti — première balle.", "direct"]);
+    if (depuis < 0 && -depuis <= AVANT_MATCH)
+      candidats.push(["rappel", `Coup d'envoi ${compteARebours(t, maintenant)}.`, "programme"]);
+    if (m.code === "P" && m.detail === "Warmup" && depuis < PEREMPTION.echauffement)
+      candidats.push(["echauffement", "Les échauffements ont commencé.", "programme"]);
+
+    const choix = candidats.find(([type]) => !deja.has(`${m.id}:${type}`));
+    if (!choix) continue;
+    const [type, corps, cible] = choix;
+    sortie.push({
+      cle: `${m.id}:${type}`,
+      type,
+      titre: `${m.ext} @ ${m.dom}`,
+      corps,
+      cible,
+      // Un seul fil par match : les trois avertissements se remplacent au lieu
+      // de s'empiler, et l'ecran garde une ligne par rencontre.
+      tag: String(m.id),
+      idEquipe: m.idSuivi ?? m.idDom,
+    });
+  }
+  return sortie;
+}
+
+/* Les cles servies sont datees pour pouvoir etre purgees : sans ca, l'objet
+   grossirait d'une trentaine d'entrees par nuit, indefiniment. Deux jours de
+   memoire suffisent — au-dela, le match est fini depuis longtemps. */
+function purgerVues(vues = {}, aujourdhui = jourParis()) {
+  const limite = decalerJour(aujourdhui, -2);
+  return Object.fromEntries(Object.entries(vues).filter(([, j]) => j >= limite));
+}
+
+/* ---------------------------------------------------------------- *
+ *  Le seul endroit qui touche a l'API du navigateur, isole a dessein :
+ *  couvrir Android et l'iOS installe passerait par un service worker et
+ *  `registration.showNotification()`, et c'est `notifier` — elle seule —
+ *  qu'il faudrait alors reecrire.
+ * ---------------------------------------------------------------- */
+const notifsPossibles = () => typeof window !== "undefined" && "Notification" in window;
+
+const permissionNotifs = () => (notifsPossibles() ? Notification.permission : "absent");
+
+/* Safari exige que la demande parte d'un geste de l'utilisateur, et ses
+   versions anciennes ne rendent pas de promesse : elles appellent un rappel.
+   On accepte les deux formes plutot que de parier sur l'une. */
+function demanderNotifs() {
+  if (!notifsPossibles()) return Promise.resolve("absent");
+  return new Promise((res) => {
+    try {
+      const p = Notification.requestPermission(res);
+      if (p?.then) p.then(res, () => res("denied"));
+    } catch {
+      res("denied");
+    }
+  });
+}
+
+function notifier({ titre, corps, tag, cible, idEquipe }) {
+  if (permissionNotifs() !== "granted") return false;
+  try {
+    const n = new Notification(titre, {
+      body: corps,
+      tag,
+      lang: "fr",
+      // ROND() rend un PNG. CAP() rend du SVG, que Chrome refuse en icone de
+      // notification ; Safari macOS, lui, ignore le champ et montre le favicon.
+      icon: idEquipe ? ROND(idEquipe) : undefined,
+    });
+    n.onclick = () => {
+      try {
+        window.focus();
+        window.location.hash = cible;
+      } catch {
+        /* contexte restreint : la notification se ferme quand meme */
+      }
+      n.close();
+    };
+    return true;
+  } catch {
+    /* Permission revoquee en cours de route, ou plateforme qui expose
+       `Notification` sans savoir le construire — c'est le cas d'Android
+       Chrome, qui impose de passer par un service worker. */
+    return false;
+  }
+}
+
+/* ---------------------------------------------------------------- *
  *  RESUMES DE MATCH
  *  Deux montages officiels accompagnent chaque match termine :
  *    mlb_recap       ~3 min, commente, et dont LE TITRE SPOILE
@@ -1926,7 +2058,67 @@ function BandeauSituation({ situation, spoilers, onAfficher }) {
   );
 }
 
-function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null }) {
+/* L'interrupteur vit dans le programme — c'est ici qu'on lit les horaires —
+   mais la veille qu'il commande tourne dans `App` : les avertissements
+   continuent de tomber pendant qu'on lit le carnet ou qu'on suit le direct. */
+function ReglageAvertissements({ actif, sur, nbSuivies }) {
+  // Rien a brancher : rendu serveur, ou vue montee seule dans un test.
+  if (!sur) return null;
+
+  const possible = notifsPossibles();
+  const bloque = possible && permissionNotifs() === "denied";
+  const gele = !possible || bloque;
+  // Un interrupteur allume sans equipe suivie ne dira jamais rien : c'est le
+  // seul cas ou le reglage se contredit lui-meme, donc le seul a signaler.
+  const muet = actif && nbSuivies === 0;
+
+  const explication = !possible
+    ? "Ce navigateur ne sait pas notifier depuis un onglet — c'est le cas de Safari sur iOS et de Chrome sur Android."
+    : bloque
+    ? "Les notifications sont bloquées pour ce site. Ça se débloque dans les réglages du navigateur, pas ici."
+    : muet
+    ? "Aucune équipe suivie : il n'y a rien à annoncer. Choisis-en au moins une ci-dessous."
+    : actif
+    ? "Un quart d'heure avant le coup d'envoi, au début des échauffements, puis à la première balle. Tant que cet onglet reste ouvert."
+    : "Un quart d'heure avant le coup d'envoi, au début des échauffements, puis à la première balle.";
+
+  return (
+    <div
+      style={{
+        marginBottom: 16, padding: "9px 13px", borderRadius: 3,
+        border: `1px dashed ${muet ? T.clay : "rgba(239,243,234,.22)"}`,
+        opacity: gele ? 0.6 : 1,
+      }}
+    >
+      <label
+        style={{
+          fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".08em",
+          color: gele ? T.dim : T.sodium,
+          display: "flex", alignItems: "center", gap: 6,
+          cursor: gele ? "not-allowed" : "pointer",
+        }}
+      >
+        <input
+          type="checkbox"
+          checked={actif}
+          disabled={gele}
+          onChange={(e) => sur(e.target.checked)}
+        />
+        M'AVERTIR AVANT LES MATCHS
+      </label>
+      <p
+        style={{
+          margin: "5px 0 0 22px", fontFamily: FF_MONO, fontSize: 10.5,
+          lineHeight: 1.6, color: muet ? T.clay : T.dim,
+        }}
+      >
+        {explication}
+      </p>
+    </div>
+  );
+}
+
+function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null }) {
   const [ancre, setAncre] = useState(() => decalerJour(jourParis(), -1));
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
@@ -2333,6 +2525,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           AFFICHER LES RÉSULTATS
         </label>
       </div>
+
+      <ReglageAvertissements actif={notifs} sur={setNotifs} nbSuivies={suivies.length} />
 
       {/* --- equipes suivies : toujours visibles, jamais repliees --- */}
       <div
@@ -3908,6 +4102,125 @@ function cibleDepuisFragment(brut) {
 }
 
 /* ------------------------------------------------------------------ *
+ *  VEILLE DES AVERTISSEMENTS
+ *  Monte dans `App` et non dans `VueNuits` : cette derniere est demontee
+ *  des qu'on change d'onglet, et les avertissements doivent survivre a la
+ *  lecture du carnet. D'ou une requete a elle, tres legere.
+ * ------------------------------------------------------------------ */
+const CADENCE_VEILLE = 60e3;      // quand quelque chose peut arriver
+const CADENCE_REPOS = 10 * 60e3;  // le reste du temps
+const FENETRE_VEILLE = 3 * 3600e3;
+
+const CHAMPS_AVERTIR =
+  "dates,games,gamePk,gameDate,status,codedGameState,detailedState," +
+  "teams,away,home,team,id,name";
+
+function useAvertissements(suivies, actif) {
+  const [nuit, setNuit] = useState([]);
+  const [battement, setBattement] = useState(0);
+  const vues = useRef(null);   // cles deja servies -> jour, null tant que non lu
+  const dernier = useRef(0);   // horodatage de la derniere requete
+
+  /* Restaure les cles deja servies, purgees des plus anciennes. Sans cette
+     memoire, un rechargement de page rejouerait toute la soiree. */
+  useEffect(() => {
+    loadState().then((s) => {
+      vues.current = purgerVues(s.notifsVues || {});
+      saveState({ notifsVues: vues.current });
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!actif) return;
+    const id = setInterval(() => setBattement((n) => n + 1), CADENCE_VEILLE);
+    return () => clearInterval(id);
+  }, [actif]);
+
+  /* Le filtre par equipe suivie s'applique ICI, pas dans l'URL de la requete.
+     C'est ce qui fait qu'ajouter une equipe prend effet au battement suivant :
+     lier la selection a la requete aurait exige un rechargement. La reponse
+     pese 6 Ko qu'on filtre ou non, le choix est donc gratuit.
+     Aucune equipe suivie veut dire « les trente » partout ailleurs dans
+     l'application : ici, ce serait quinze notifications par nuit. On se tait. */
+  const cibles = useMemo(
+    () =>
+      suivies.length === 0
+        ? []
+        : nuit
+            .filter((m) => suivies.includes(m.idExt) || suivies.includes(m.idDom))
+            // L'icone porte la casquette de TON equipe, pas celle qui recoit.
+            .map((m) => ({ ...m, idSuivi: suivies.includes(m.idDom) ? m.idDom : m.idExt })),
+    [nuit, suivies]
+  );
+
+  /* Sonde. `cibles` figure dans les dependances — donc changer d'equipes
+     suivies reveille l'effet — mais ne provoque pas de requete pour autant :
+     `dernier` fait respecter la cadence. C'est aussi ce qui arrete la boucle
+     que `setNuit` amorcerait sinon en modifiant `cibles`. */
+  useEffect(() => {
+    // Aucune equipe suivie : il n'y a rien a annoncer, donc rien a demander.
+    // Sans cet arret, la veille continuerait a sonder toutes les dix minutes
+    // pour un resultat dont on sait deja qu'il sera vide.
+    if (!actif || suivies.length === 0) return;
+    const maintenant = Date.now();
+    const proche = cibles.some((m) => {
+      const dans = new Date(m.debut).getTime() - maintenant;
+      return (
+        (dans > -FENETRE_VEILLE && dans < FENETRE_VEILLE) ||
+        m.detail === "Warmup" ||
+        m.detail === "Pre-Game"
+      );
+    });
+    if (maintenant - dernier.current < (proche ? CADENCE_VEILLE : CADENCE_REPOS)) return;
+    dernier.current = maintenant;
+
+    let annule = false;
+    // Deux journees americaines : une nuit parisienne enjambe la frontiere de
+    // date, meme raison que le jour supplementaire tire par VueNuits.
+    const jourNY = (n) =>
+      new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" })
+        .format(new Date(maintenant + n * 864e5));
+    jsonMlb(
+      `${API}/schedule?sportId=1&startDate=${jourNY(0)}&endDate=${jourNY(1)}` +
+        `&hydrate=team&fields=${CHAMPS_AVERTIR}`
+    )
+      .then((d) => {
+        if (annule) return;
+        const out = [];
+        for (const jr of d.dates || [])
+          for (const g of jr.games || [])
+            out.push({
+              id: g.gamePk,
+              debut: g.gameDate,
+              code: g.status?.codedGameState,
+              detail: g.status?.detailedState,
+              idExt: g.teams?.away?.team?.id,
+              idDom: g.teams?.home?.team?.id,
+              ext: g.teams?.away?.team?.name,
+              dom: g.teams?.home?.team?.name,
+            });
+        setNuit(out);
+      })
+      .catch(() => {});
+    return () => {
+      annule = true;
+    };
+  }, [actif, battement, cibles, suivies]);
+
+  /* Emission. Separee de la sonde : une equipe ajoutee doit pouvoir declencher
+     un avertissement sans attendre la requete suivante. */
+  useEffect(() => {
+    if (!actif || vues.current == null) return;
+    const aEmettre = notificationsADeclencher(cibles, new Set(Object.keys(vues.current)));
+    const ajout = {};
+    for (const a of aEmettre) if (notifier(a)) ajout[a.cle] = jourParis();
+    if (!Object.keys(ajout).length) return;
+    vues.current = { ...vues.current, ...ajout };
+    saveState({ notifsVues: vues.current });
+  }, [actif, battement, cibles]);
+}
+
+/* ------------------------------------------------------------------ *
  *  GARDE-FOU DE RENDU
  *  Sans elle, une seule exception dans n'importe quelle vue vide la page :
  *  React 16+ demonte tout l'arbre plutot que de laisser une interface a
@@ -4012,13 +4325,19 @@ export default function App() {
   const [appris, setAppris] = useState([]);
   const [suivies, setSuivies] = useState([119]);
   const [resetArme, setResetArme] = useState(false);
+  const [notifs, setNotifs] = useState(false);
 
   useEffect(() => {
     loadState().then((s) => {
       setAppris(s.appris || []);
       setSuivies(s.suivies || [119]);
+      // La permission se revoque depuis le navigateur, sans prevenir la page :
+      // le reglage garde ne vaut que si elle tient toujours.
+      setNotifs(!!s.notifs && permissionNotifs() === "granted");
     });
   }, []);
+
+  useAvertissements(suivies, notifs);
 
   // Bilans victoires/defaites : une seule requete pour les 30 equipes,
   // base de la cote de rencontre (log5).
@@ -4124,6 +4443,23 @@ export default function App() {
   const majSuivies = (v) => {
     setSuivies(v);
     saveState({ suivies: v });
+  };
+
+  /* La demande de permission doit partir d'un geste de l'utilisateur : Safari
+     l'exige, et Chrome ignore les demandes spontanees. D'ou l'appel depuis le
+     gestionnaire de l'interrupteur, et surtout pas depuis un effet. */
+  const majNotifs = async (v) => {
+    if (!v) {
+      setNotifs(false);
+      saveState({ notifs: false });
+      return;
+    }
+    const p = permissionNotifs() === "granted" ? "granted" : await demanderNotifs();
+    // Un refus laisse l'interrupteur eteint : le rallumer sans permission
+    // promettrait des avertissements qui ne viendraient jamais.
+    const ok = p === "granted";
+    setNotifs(ok);
+    saveState({ notifs: ok });
   };
 
   const vider = async () => {
@@ -4258,6 +4594,8 @@ ${POLICES}
             bilans={bilans}
             saisonBilans={saisonBilans}
             stades={stades}
+            notifs={notifs}
+            setNotifs={majNotifs}
           />
         )}
         </Garde>
@@ -4327,6 +4665,9 @@ export {
   // vue « le carnet »
   VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,
+  // avertissements d'avant-match
+  notificationsADeclencher, purgerVues, ReglageAvertissements,
+  AVANT_MATCH, PEREMPTION, SANS_SUITE, CADENCE_VEILLE, CADENCE_REPOS,
   // garde-fous transverses
   Garde, jourParis, jsonMlb, TZ,
 };
