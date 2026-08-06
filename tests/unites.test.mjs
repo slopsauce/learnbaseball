@@ -1557,6 +1557,21 @@ describe("l'effectif d'une équipe", () => {
     assert.deepEqual(g[0].membres.map((m) => m.person.fullName), ["A", "C", "B"]);
   });
 
+  test("un numéro vide ne passe pas pour un zéro", () => {
+    /* L'API renvoie une chaine VIDE, pas `undefined`, pour un joueur sans
+       numero attribue — quatre des quarante-neuf Dodgers ce matin. Number("")
+       vaut 0 : ces joueurs remontaient en tete de leur groupe. */
+    const g = A.grouperEffectif([
+      membre({ jerseyNumber: "9", person: { id: 1, fullName: "Neuf" } }),
+      membre({ jerseyNumber: "", person: { id: 2, fullName: "Sans numéro" } }),
+      // Numero de maillot absent mais fiche renseignee : c'est elle qui sert,
+      // comme dans l'affichage.
+      membre({ jerseyNumber: "", person: { id: 3, fullName: "Replié", primaryNumber: "5" } }),
+    ]);
+    assert.deepEqual(g[0].membres.map((m) => m.person.fullName),
+      ["Replié", "Neuf", "Sans numéro"]);
+  });
+
   test("aucun sigle affiché n'est laissé sans explication", () => {
     // Le site s'appelle « apprendre le baseball » : un « MOY .310 » qu'on ne
     // peut pas elucider sur place ne vaut pas mieux qu'une case vide.
@@ -1570,6 +1585,14 @@ describe("l'effectif d'une équipe", () => {
   test("chaque poste affiché a une traduction", () => {
     for (const p of ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH", "TWP"])
       assert.ok(A.POSTE_FR[p], `poste ${p} sans libellé français`);
+  });
+
+  test("l'hydratation réclame les deux groupes de statistiques", () => {
+    // Sans `group=[hitting,pitching]`, l'API ne rend que le lancer d'un joueur
+    // des deux casquettes : Ohtani s'affichait sans une seule ligne de frappe,
+    // sous un titre qui en promet deux.
+    assert.match(A.HYDRATE_EFFECTIF, /group=\[hitting,pitching\]/);
+    assert.match(A.HYDRATE_EFFECTIF, /type=season/);
   });
 
   test("le filtre de champs couvre ce que la vue affiche", () => {

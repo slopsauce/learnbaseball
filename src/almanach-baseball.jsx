@@ -4117,6 +4117,13 @@ function VueDirect({ teams, suivies = [] }) {
    lui, 18 avec. C'est une liste blanche de NOMS de champs, appliquee a
    toute la profondeur du document — d'ou la presence de cles aussi
    banales que `id`, `name` ou `code`, reclamees par plusieurs niveaux. */
+/* Le groupe est reclame explicitement : par defaut, l'API ne rend QUE le
+   lancer d'un joueur des deux casquettes. Ohtani s'affichait donc sans une
+   seule ligne de frappe, sous un titre qui en promet deux. Un lanceur
+   ordinaire y gagne une ligne de frappe qu'on n'affiche pas — 3 Ko pour
+   trente joueurs, le prix d'une virgule. */
+const HYDRATE_EFFECTIF = "person(stats(type=season,group=[hitting,pitching]))";
+
 const CHAMPS_EFFECTIF =
   "roster,person,id,fullName,primaryNumber,currentAge,height,weight,batSide,pitchHand," +
   "code,stats,group,displayName,splits,stat,team,sport,numTeams,avg,ops,homeRuns,rbi,stolenBases," +
@@ -4213,9 +4220,15 @@ function grouperEffectif(roster = []) {
     if (!par.has(t)) par.set(t, []);
     par.get(t).push(m);
   }
+  /* `||` et non `??` : l'API renvoie une chaine VIDE pour un joueur sans
+     numero attribue — quatre des quarante-neuf Dodgers aujourd'hui. `??` la
+     laisse passer, `Number("")` vaut 0, et ces joueurs remontaient en tete de
+     leur groupe. Ils tombent maintenant sur le numero de la fiche, puis sur
+     la sentinelle qui les renvoie en fin de liste. */
   const num = (m) => {
-    const n = Number(m.jerseyNumber ?? m.person?.primaryNumber);
-    return Number.isFinite(n) ? n : 999;
+    const brut = m.jerseyNumber || m.person?.primaryNumber;
+    const n = Number(brut);
+    return brut && Number.isFinite(n) ? n : 999;
   };
   return GROUPES_POSTE.filter(([t]) => par.has(t)).map(([t, libelle]) => ({
     type: t,
@@ -4233,7 +4246,13 @@ function FicheJoueur({ m, teamId }) {
   const numero = m.jerseyNumber || p.primaryNumber;
   const statut = statutEffectif(m.status?.description);
   const { frappe, lance } = statsSaison(p, teamId);
-  const lanceur = m.position?.type === "Pitcher" || m.position?.type === "Two-Way Player";
+  const deuxCasquettes = m.position?.type === "Two-Way Player";
+  const lanceur = m.position?.type === "Pitcher" || deuxCasquettes;
+  /* Depuis que l'hydratation reclame les deux groupes, un lanceur ordinaire
+     porte aussi une ligne de frappe — quelques presences par saison, sans
+     interet. On ne la montre qu'a ceux dont c'est le metier. */
+  const ligneLance = lanceur && lance;
+  const ligneFrappe = frappe && (!lanceur || deuxCasquettes);
 
   const bat = COTE[p.batSide?.code];
   const lance_ = COTE[p.pitchHand?.code];
@@ -4267,7 +4286,10 @@ function FicheJoueur({ m, teamId }) {
             .join(" · ")}
         </div>
 
-        {lanceur && lance ? (
+        {/* Un joueur des deux casquettes porte les DEUX lignes : n'en montrer
+            qu'une sous un titre qui promet l'inverse serait la pire des
+            reponses. Pour tous les autres, une seule des deux existe. */}
+        {ligneLance && (
           <div
             title={`ERA ${lance.era} — points mérités accordés toutes les neuf manches. Bilan ${lance.wins}-${lance.losses}, ${lance.strikeOuts} retraits sur prises en ${lance.inningsPitched} manches.`}
             style={{
@@ -4278,7 +4300,8 @@ function FicheJoueur({ m, teamId }) {
             ERA {lance.era} · {lance.wins}-{lance.losses}
             {lance.saves ? ` · ${lance.saves} sauv.` : ""} · {lance.strikeOuts} K
           </div>
-        ) : frappe ? (
+        )}
+        {ligneFrappe && (
           <div
             title={`Moyenne au bâton ${frappe.avg} sur ${frappe.gamesPlayed} matchs, ${frappe.homeRuns} circuits, ${frappe.rbi} points produits, OPS ${frappe.ops}.`}
             style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 3, cursor: "help" }}
@@ -4286,7 +4309,8 @@ function FicheJoueur({ m, teamId }) {
             MOY {frappe.avg} · {frappe.homeRuns} CC · {frappe.rbi} PP
             {frappe.stolenBases ? ` · ${frappe.stolenBases} BV` : ""}
           </div>
-        ) : (
+        )}
+        {!ligneLance && !ligneFrappe && (
           <div style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 3 }}>
             aucune apparition cette saison
           </div>
@@ -4320,23 +4344,52 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
     if (Number.isFinite(c) && c > 0) setTeamId(c);
   }
 
+  /* Les equipes suivies sont relues du stockage APRES le premier rendu : au
+     montage, `suivies` est encore la valeur par defaut. Sans ce rattrapage,
+     qui suit une seule franchise tombait invariablement sur les Dodgers en
+     ouvrant l'onglet. Il ne se declenche qu'a l'arrivee des reglages, et
+     jamais apres un choix de l'utilisateur — sinon le stockage reprendrait la
+     main sur le menu qu'on vient de manipuler. */
+  const [choisiAlaMain, setChoisiAlaMain] = useState(false);
+  const [suiviesVues, setSuiviesVues] = useState(suivies[0]);
+  if (suivies[0] !== suiviesVues) {
+    setSuiviesVues(suivies[0]);
+    if (!choisiAlaMain && !cible && suivies[0]) setTeamId(suivies[0]);
+  }
+  const choisirEquipe = (id) => {
+    setChoisiAlaMain(true);
+    setTeamId(id);
+  };
+
   const [complet, setComplet] = useState(false); // effectif actif | les 40
   const [roster, setRoster] = useState([]);
   const [phase, setPhase] = useState("load"); // load | ok | vide | erreur
   const [erreur, setErreur] = useState("");
 
+  /* Numero de la demande en cours. Deux basculements rapides entre l'effectif
+     actif et les quarante partent sur deux requetes ; rien ne garantit qu'elles
+     reviennent dans l'ordre, et la lente ecrasait la rapide — l'effectif affiche
+     ne correspondait plus ni au menu ni au bouton, et `statsSaison` recevait un
+     `teamId` qui n'etait pas le sien. L'echec d'une requete abandonnee faisait
+     de meme basculer en panneau d'erreur une vue deja chargee. */
+  const demande = useRef(0);
+  useEffect(() => () => { demande.current = -1; }, []);
+
   const charger = useCallback(async (tid, tout) => {
+    const mienne = ++demande.current;
     setPhase("load");
     setErreur("");
     try {
       const d = await jsonMlb(
         `${API}/teams/${tid}/roster?rosterType=${tout ? "40Man" : "active"}` +
-          `&hydrate=person(stats(type=season))&fields=${CHAMPS_EFFECTIF}`
+          `&hydrate=${HYDRATE_EFFECTIF}&fields=${CHAMPS_EFFECTIF}`
       );
+      if (demande.current !== mienne) return;
       const liste = (d.roster || []).filter((m) => m.person?.id);
       setRoster(liste);
       setPhase(liste.length ? "ok" : "vide");
     } catch (e) {
+      if (demande.current !== mienne) return;
       setErreur(String(e?.message || e));
       setPhase("erreur");
     }
@@ -4384,7 +4437,7 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
         teams={teams}
         suivies={suivies}
         valeur={teamId}
-        onChange={setTeamId}
+        onChange={choisirEquipe}
       />
 
       {equipe && (
@@ -5251,7 +5304,7 @@ export {
   VueDirect, BasesOccupees, Compteurs, TableauManches, CHAMPS_DIRECT, CADENCE_DIRECT, classerMatch,
   // vue « les equipes »
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
-  GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, GLOSSAIRE_FICHE,
+  GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »

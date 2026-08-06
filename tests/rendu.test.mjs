@@ -194,6 +194,48 @@ describe("rendu de la vue Équipes", () => {
     assert.doesNotMatch(html, /ERA/, "un voltigeur n'a pas d'ERA à afficher");
   });
 
+  test("un joueur des deux casquettes porte ses deux lignes", () => {
+    // Le groupe s'intitule « Les deux casquettes » : n'en montrer qu'une
+    // contredirait son propre titre.
+    const ohtani = {
+      person: {
+        id: 660271, fullName: "Shohei Ohtani", currentAge: 32,
+        batSide: { code: "L" }, pitchHand: { code: "R" },
+        stats: [
+          { group: { displayName: "hitting" },
+            splits: [{ team: { id: 119 }, stat: { avg: ".282", homeRuns: 41, rbi: 84, ops: "1.014", gamesPlayed: 110, stolenBases: 15 } }] },
+          { group: { displayName: "pitching" },
+            splits: [{ team: { id: 119 }, stat: { era: "2.87", wins: 5, losses: 2, strikeOuts: 78, inningsPitched: "62.2" } }] },
+        ],
+      },
+      jerseyNumber: "17",
+      position: { type: "Two-Way Player", abbreviation: "TWP", name: "Two-Way Player" },
+      status: { description: "Active" },
+    };
+    const html = rendre(React.createElement(FicheJoueur, { m: ohtani, teamId: 119 }));
+    assert.match(html, /ERA 2.87/, "la ligne de lancer manque");
+    assert.match(html, /MOY .282/, "la ligne de frappe manque");
+    assert.match(html, /41 CC/);
+  });
+
+  test("un lanceur ordinaire ne montre pas ses quelques passages au bâton", () => {
+    // L'hydratation des deux groupes lui en donne une ; elle n'apprend rien.
+    const releveur = {
+      person: {
+        id: 1, fullName: "Releveur",
+        stats: [
+          { group: { displayName: "hitting" }, splits: [{ team: { id: 119 }, stat: { avg: ".000", homeRuns: 0, rbi: 0 } }] },
+          { group: { displayName: "pitching" }, splits: [{ team: { id: 119 }, stat: { era: "3.03", wins: 1, losses: 1, strikeOuts: 53 } }] },
+        ],
+      },
+      position: { type: "Pitcher", abbreviation: "P" },
+      status: {},
+    };
+    const html = rendre(React.createElement(FicheJoueur, { m: releveur, teamId: 119 }));
+    assert.match(html, /ERA 3.03/);
+    assert.doesNotMatch(html, /MOY/, "la ligne de frappe d'un lanceur est du bruit");
+  });
+
   test("une indisponibilité est dite, en français", () => {
     assert.match(rendre(React.createElement(FicheJoueur, { m: frappeur, teamId: 119 })),
       /blessé — liste 10 jours/);

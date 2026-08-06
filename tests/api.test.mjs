@@ -130,19 +130,27 @@ describe("contrat : /roster", () => {
 
   test("l'hydratation ramene bien les statistiques de la saison", { skip: horsSaison }, async () => {
     const d = await j(
-      `${API}/teams/119/roster?rosterType=active&hydrate=person(stats(type=season))&fields=${CHAMPS}`
+      `${API}/teams/119/roster?rosterType=active&hydrate=person(stats(type=season,group=[hitting,pitching]))&fields=${CHAMPS}`
     );
     const avec = d.roster.filter((m) => (m.person.stats || []).length);
     assert.ok(avec.length, "aucune statistique hydratee — la vue afficherait des fiches nues");
     const groupes = new Set(avec.flatMap((m) => m.person.stats.map((s) => s.group?.displayName)));
-    assert.ok(groupes.has("hitting") || groupes.has("pitching"),
+    assert.ok(groupes.has("hitting") && groupes.has("pitching"),
       `groupes recus : ${[...groupes].join(", ")}`);
+    /* Un joueur des deux casquettes doit porter les DEUX groupes : c'est tout
+       l'objet de `group=[hitting,pitching]`, que l'API ignorerait en silence. */
+    const twp = d.roster.find((m) => m.position.type === "Two-Way Player");
+    if (twp) {
+      const g = new Set((twp.person.stats || []).map((s) => s.group?.displayName));
+      assert.ok(g.has("hitting") && g.has("pitching"),
+        `${twp.person.fullName} n'a que : ${[...g].join(", ") || "rien"}`);
+    }
     const stat = avec.flatMap((m) => m.person.stats).flatMap((s) => s.splits || [])[0]?.stat || {};
     assert.ok("avg" in stat || "era" in stat, "ni moyenne au baton ni ERA dans les splits");
   });
 
   test("le filtre de champs garde la reponse legere", async () => {
-    const url = `${API}/teams/119/roster?rosterType=active&hydrate=person(stats(type=season))`;
+    const url = `${API}/teams/119/roster?rosterType=active&hydrate=person(stats(type=season,group=[hitting,pitching]))`;
     const [brut, filtre] = await Promise.all([
       fetch(url).then((r) => r.text()),
       fetch(`${url}&fields=${CHAMPS}`).then((r) => r.text()),
