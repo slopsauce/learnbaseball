@@ -1404,3 +1404,43 @@ describe("avertissements d'avant-match", () => {
     assert.deepEqual(A.purgerVues(undefined, "2026-08-06"), {});
   });
 });
+
+describe("ce que le reglage promet", () => {
+  const t = (o) => A.texteAvertissements({ permission: "granted", actif: true, nbSuivies: 1, ...o });
+
+  test("eteint, il annonce seulement les trois moments", () => {
+    const s = t({ actif: false });
+    assert.match(s, /quart d'heure.*échauffements.*première balle/s);
+    assert.doesNotMatch(s, /bandeau|système/, "eteint, il ne promet aucun canal");
+  });
+
+  test("allume sans equipe suivie, il dit qu'il ne dira rien", () => {
+    assert.match(t({ nbSuivies: 0 }), /Aucune équipe suivie/);
+  });
+
+  test("avec la permission, il annonce les deux canaux", () => {
+    const s = t({});
+    assert.match(s, /système/);
+    assert.match(s, /bandeau dans la page/);
+  });
+
+  test("sans permission, il ne promet que ce qu'il peut tenir", () => {
+    for (const permission of ["denied", "absent", "default"]) {
+      const s = t({ permission });
+      assert.match(s, /bandeau dans la page/, permission);
+      assert.doesNotMatch(
+        s, /notification du système quand tu es ailleurs/,
+        `${permission} : promettre la banniere systeme serait mentir`);
+    }
+    assert.match(t({ permission: "denied" }), /bloquées/);
+    assert.match(t({ permission: "absent" }), /iOS.*Android/);
+    assert.match(t({ permission: "default" }), /autorise/);
+  });
+
+  test("des qu'il est allume avec une equipe, il promet toujours le bandeau", () => {
+    // Le bandeau est le seul canal qui marche partout : quel que soit l'etat
+    // de la permission, il doit figurer dans la promesse.
+    for (const permission of ["granted", "denied", "absent", "default", "n'importe quoi"])
+      assert.match(t({ permission }), /bandeau dans la page/, permission);
+  });
+});

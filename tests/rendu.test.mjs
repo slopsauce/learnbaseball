@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import App, { VueNuits, VueAlmanach, VueTerrains, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -258,5 +258,53 @@ describe("vue Le direct", () => {
 
   test("ne casse pas sur un tableau de manches absent", () => {
     assert.equal(rendre(React.createElement(TableauManches, { innings: [], teams: {}, ab: {} })), "");
+  });
+});
+
+describe("bandeaux d'avertissement", () => {
+  const avert = (o = {}) => ({
+    cle: "1:rappel", type: "rappel", titre: "San Francisco Giants @ Los Angeles Dodgers",
+    corps: "Coup d'envoi dans 12 min.", cible: "programme", tag: "1", idEquipe: 119, ...o,
+  });
+
+  test("la pile vide ne rend rien", () => {
+    assert.equal(rendre(React.createElement(PileBandeaux, { bandeaux: [], ecarter: () => {} })), "");
+    assert.equal(rendre(React.createElement(PileBandeaux, { ecarter: () => {} })), "");
+  });
+
+  test("un bandeau montre le match, le moment et de quoi partir", () => {
+    const html = rendre(React.createElement(PileBandeaux, {
+      bandeaux: [avert()], ecarter: () => {},
+    }));
+    assert.match(html, /San Francisco Giants @ Los Angeles Dodgers/);
+    assert.match(html, /Coup d&#x27;envoi dans 12 min\./);
+    assert.match(html, /ÇA APPROCHE/);
+    assert.match(html, /Écarter/, "il doit toujours y avoir un moyen de le fermer");
+  });
+
+  test("chaque moment a son etiquette", () => {
+    const html = rendre(React.createElement(PileBandeaux, {
+      bandeaux: [
+        avert({ cle: "1:echauffement", type: "echauffement" }),
+        avert({ cle: "1:premiere", type: "premiere", cible: "direct" }),
+      ],
+      ecarter: () => {},
+    }));
+    assert.match(html, /ÉCHAUFFEMENTS/);
+    assert.match(html, /ÇA COMMENCE/);
+  });
+
+  test("le reglage n'est pas rendu sans de quoi le brancher", () => {
+    // Au rendu serveur comme dans une vue montee seule : pas d'interrupteur
+    // qui ne commanderait rien.
+    assert.equal(rendre(React.createElement(ReglageAvertissements, { actif: false, nbSuivies: 1 })), "");
+  });
+
+  test("la case reste active meme sans permission systeme", () => {
+    const html = rendre(React.createElement(ReglageAvertissements, {
+      actif: true, sur: () => {}, nbSuivies: 1, permission: "denied",
+    }));
+    assert.doesNotMatch(html, /disabled/, "le bandeau dans la page reste un canal valable");
+    assert.match(html, /bandeau dans la page/);
   });
 });

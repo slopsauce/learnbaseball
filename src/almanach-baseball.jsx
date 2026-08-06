@@ -1754,6 +1754,16 @@ const notifsPossibles = () => typeof window !== "undefined" && "Notification" in
 
 const permissionNotifs = () => (notifsPossibles() ? Notification.permission : "absent");
 
+/* macOS n'affiche pas la banniere systeme quand le navigateur est l'application
+   de devant : il considere, a raison, que tu es deja la. C'est exactement le
+   moment ou le bandeau dans la page prend le relais.
+   `visibilityState` ne suffit pas : un onglet actif dans une fenetre qui a
+   perdu le focus reste « visible ». Il faut les deux. */
+const auPremierPlan = () =>
+  typeof document !== "undefined" &&
+  document.visibilityState === "visible" &&
+  (typeof document.hasFocus !== "function" || document.hasFocus());
+
 /* Safari exige que la demande parte d'un geste de l'utilisateur, et ses
    versions anciennes ne rendent pas de promesse : elles appellent un rappel.
    On accepte les deux formes plutot que de parier sur l'une. */
@@ -2058,52 +2068,54 @@ function BandeauSituation({ situation, spoilers, onAfficher }) {
   );
 }
 
+const QUAND = "Un quart d'heure avant le coup d'envoi, au début des échauffements, puis à la première balle.";
+
+/* Le texte sous l'interrupteur, sorti du composant pour etre verifiable : il
+   doit dire la verite sur ce qui va reellement arriver, et cette verite depend
+   de trois choses qui varient independamment. */
+function texteAvertissements({ permission, actif, nbSuivies }) {
+  if (actif && nbSuivies === 0)
+    return "Aucune équipe suivie : il n'y a rien à annoncer. Choisis-en au moins une ci-dessous.";
+  if (!actif) return QUAND;
+  // Les deux canaux marchent : banniere du systeme quand tu es ailleurs,
+  // bandeau dans la page quand tu es devant — le systeme avale la banniere
+  // dans ce cas, c'est precisement le trou que le bandeau comble.
+  if (permission === "granted")
+    return `${QUAND} Par une notification du système quand tu es ailleurs, par un bandeau dans la page quand tu es devant.`;
+  if (permission === "denied")
+    return `${QUAND} Les notifications du système sont bloquées pour ce site — tu n'auras donc que le bandeau dans la page, tant que cet onglet est ouvert. Ça se débloque dans les réglages du navigateur.`;
+  if (permission === "absent")
+    return `${QUAND} Ce navigateur ne sait pas notifier hors de l'onglet — c'est le cas de Safari sur iOS et de Chrome sur Android : tu auras le bandeau dans la page, tant que cet onglet est ouvert.`;
+  return `${QUAND} Par un bandeau dans la page ; autorise les notifications pour être aussi prévenu quand tu es ailleurs.`;
+}
+
 /* L'interrupteur vit dans le programme — c'est ici qu'on lit les horaires —
    mais la veille qu'il commande tourne dans `App` : les avertissements
    continuent de tomber pendant qu'on lit le carnet ou qu'on suit le direct. */
-function ReglageAvertissements({ actif, sur, nbSuivies }) {
+function ReglageAvertissements({ actif, sur, nbSuivies, permission = "default" }) {
   // Rien a brancher : rendu serveur, ou vue montee seule dans un test.
   if (!sur) return null;
 
-  const possible = notifsPossibles();
-  const bloque = possible && permissionNotifs() === "denied";
-  const gele = !possible || bloque;
   // Un interrupteur allume sans equipe suivie ne dira jamais rien : c'est le
   // seul cas ou le reglage se contredit lui-meme, donc le seul a signaler.
   const muet = actif && nbSuivies === 0;
-
-  const explication = !possible
-    ? "Ce navigateur ne sait pas notifier depuis un onglet — c'est le cas de Safari sur iOS et de Chrome sur Android."
-    : bloque
-    ? "Les notifications sont bloquées pour ce site. Ça se débloque dans les réglages du navigateur, pas ici."
-    : muet
-    ? "Aucune équipe suivie : il n'y a rien à annoncer. Choisis-en au moins une ci-dessous."
-    : actif
-    ? "Un quart d'heure avant le coup d'envoi, au début des échauffements, puis à la première balle. Tant que cet onglet reste ouvert."
-    : "Un quart d'heure avant le coup d'envoi, au début des échauffements, puis à la première balle.";
 
   return (
     <div
       style={{
         marginBottom: 16, padding: "9px 13px", borderRadius: 3,
         border: `1px dashed ${muet ? T.clay : "rgba(239,243,234,.22)"}`,
-        opacity: gele ? 0.6 : 1,
       }}
     >
       <label
         style={{
-          fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".08em",
-          color: gele ? T.dim : T.sodium,
-          display: "flex", alignItems: "center", gap: 6,
-          cursor: gele ? "not-allowed" : "pointer",
+          fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".08em", color: T.sodium,
+          display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
         }}
       >
-        <input
-          type="checkbox"
-          checked={actif}
-          disabled={gele}
-          onChange={(e) => sur(e.target.checked)}
-        />
+        {/* Jamais desactivee, meme sans permission systeme : le bandeau dans la
+            page reste un canal valable, et c'est le seul sur mobile. */}
+        <input type="checkbox" checked={actif} onChange={(e) => sur(e.target.checked)} />
         M'AVERTIR AVANT LES MATCHS
       </label>
       <p
@@ -2112,13 +2124,13 @@ function ReglageAvertissements({ actif, sur, nbSuivies }) {
           lineHeight: 1.6, color: muet ? T.clay : T.dim,
         }}
       >
-        {explication}
+        {texteAvertissements({ permission, actif, nbSuivies })}
       </p>
     </div>
   );
 }
 
-function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null }) {
+function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null, permission = "default" }) {
   const [ancre, setAncre] = useState(() => decalerJour(jourParis(), -1));
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
@@ -2526,7 +2538,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         </label>
       </div>
 
-      <ReglageAvertissements actif={notifs} sur={setNotifs} nbSuivies={suivies.length} />
+      <ReglageAvertissements
+        actif={notifs}
+        sur={setNotifs}
+        nbSuivies={suivies.length}
+        permission={permission}
+      />
 
       {/* --- equipes suivies : toujours visibles, jamais repliees --- */}
       <div
@@ -4115,9 +4132,116 @@ const CHAMPS_AVERTIR =
   "dates,games,gamePk,gameDate,status,codedGameState,detailedState," +
   "teams,away,home,team,id,name";
 
+const DUREE_BANDEAU = 15000;
+const ETIQUETTE = {
+  rappel: "ÇA APPROCHE",
+  echauffement: "ÉCHAUFFEMENTS",
+  premiere: "ÇA COMMENCE",
+};
+
+function Bandeau({ a, ecarter }) {
+  useEffect(() => {
+    /* Le compte a rebours ne court que quand la page est vraiment devant : un
+       bandeau ne doit pas expirer pendant que tu es dans une autre
+       application, sinon l'avertissement que la banniere systeme n'a pas pu
+       montrer disparaitrait avant que tu reviennes. */
+    let t = null;
+    const armer = () => {
+      clearTimeout(t);
+      if (auPremierPlan()) t = setTimeout(() => ecarter(a.cle), DUREE_BANDEAU);
+    };
+    armer();
+    document.addEventListener("visibilitychange", armer);
+    window.addEventListener("focus", armer);
+    window.addEventListener("blur", armer);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener("visibilitychange", armer);
+      window.removeEventListener("focus", armer);
+      window.removeEventListener("blur", armer);
+    };
+  }, [a.cle, ecarter]);
+
+  const aller = () => {
+    try {
+      window.location.hash = a.cible;
+    } catch {
+      /* contexte restreint : le bandeau se ferme quand meme */
+    }
+    ecarter(a.cle);
+  };
+
+  return (
+    <div
+      className="alm-rise"
+      style={{
+        display: "flex", alignItems: "flex-start", gap: 10,
+        background: "rgba(11,36,26,.97)", border: `1px solid ${T.sodium}`,
+        borderRadius: 3, padding: "10px 12px",
+        boxShadow: "0 6px 22px rgba(0,0,0,.45)",
+      }}
+    >
+      <Img src={ROND(a.idEquipe)} alt="" size={30} />
+      <button
+        onClick={aller}
+        style={{ all: "unset", cursor: "pointer", flex: 1, minWidth: 0 }}
+      >
+        <div
+          style={{
+            fontFamily: FF_MONO, fontSize: 9, letterSpacing: ".18em", color: T.sodium,
+          }}
+        >
+          {ETIQUETTE[a.type] || "AVERTISSEMENT"}
+        </div>
+        <div
+          style={{
+            fontFamily: FF_DISPLAY, fontSize: 17, lineHeight: 1.05, color: T.chalk,
+            textTransform: "uppercase", letterSpacing: ".02em", margin: "3px 0 2px",
+          }}
+        >
+          {a.titre}
+        </div>
+        <div style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim }}>{a.corps}</div>
+      </button>
+      <button
+        className="alm-btn"
+        onClick={() => ecarter(a.cle)}
+        aria-label={`Écarter : ${a.titre}`}
+        style={{
+          all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 14,
+          color: T.dim, lineHeight: 1, padding: "0 2px",
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+/* Rendue par `App` et non par le programme : elle doit apparaitre quel que
+   soit l'onglet regarde, comme la veille qui l'alimente. */
+function PileBandeaux({ bandeaux = [], ecarter }) {
+  if (!bandeaux.length) return null;
+  return (
+    <div
+      style={{
+        position: "fixed", zIndex: 50,
+        right: 14, left: "auto", bottom: "calc(14px + env(safe-area-inset-bottom, 0px))",
+        maxWidth: "min(360px, calc(100vw - 28px))",
+        display: "flex", flexDirection: "column", gap: 8,
+      }}
+    >
+      {bandeaux.map((a) => (
+        <Bandeau key={a.cle} a={a} ecarter={ecarter} />
+      ))}
+    </div>
+  );
+}
+
 function useAvertissements(suivies, actif) {
   const [nuit, setNuit] = useState([]);
   const [battement, setBattement] = useState(0);
+  const [bandeaux, setBandeaux] = useState([]);
   const vues = useRef(null);   // cles deja servies -> jour, null tant que non lu
   const dernier = useRef(0);   // horodatage de la derniere requete
 
@@ -4207,17 +4331,44 @@ function useAvertissements(suivies, actif) {
     };
   }, [actif, battement, cibles, suivies]);
 
-  /* Emission. Separee de la sonde : une equipe ajoutee doit pouvoir declencher
-     un avertissement sans attendre la requete suivante. */
+  /* Emission, sur deux canaux qui ne se recouvrent pas. Separee de la sonde :
+     une equipe ajoutee doit pouvoir declencher un avertissement sans attendre
+     la requete suivante.
+
+       page devant  -> bandeau seul. La banniere systeme serait avalee par le
+                       systeme, l'emettre ne ferait qu'un doublon muet.
+       page derriere-> banniere systeme si la permission est la, et le bandeau
+                       attend quand meme le retour. Sans permission — Safari
+                       iOS, Chrome Android, refus de l'utilisateur — le bandeau
+                       est le seul canal, et c'est deja mieux que rien. */
   useEffect(() => {
     if (!actif || vues.current == null) return;
     const aEmettre = notificationsADeclencher(cibles, new Set(Object.keys(vues.current)));
+    if (!aEmettre.length) return;
+    if (!auPremierPlan()) for (const a of aEmettre) notifier(a);
+    // Trois au plus : au-dela, la pile masquerait la page qu'elle surplombe.
+    setBandeaux((b) => [...b, ...aEmettre].slice(-3));
     const ajout = {};
-    for (const a of aEmettre) if (notifier(a)) ajout[a.cle] = jourParis();
-    if (!Object.keys(ajout).length) return;
+    for (const a of aEmettre) ajout[a.cle] = jourParis();
     vues.current = { ...vues.current, ...ajout };
     saveState({ notifsVues: vues.current });
   }, [actif, battement, cibles]);
+
+  const ecarter = useCallback(
+    (cle) => setBandeaux((b) => b.filter((a) => a.cle !== cle)),
+    []
+  );
+  /* Eteindre le reglage doit faire disparaitre ce qui reste a l'ecran. Ajuste
+     au rendu plutot que dans un effet — meme motif que les deux autres
+     synchronisations de ce fichier : un effet ferait peindre une fois de plus
+     les bandeaux qu'on veut justement retirer. */
+  const [actifVu, setActifVu] = useState(actif);
+  if (actif !== actifVu) {
+    setActifVu(actif);
+    if (!actif) setBandeaux([]);
+  }
+
+  return { bandeaux, ecarter };
 }
 
 /* ------------------------------------------------------------------ *
@@ -4326,18 +4477,22 @@ export default function App() {
   const [suivies, setSuivies] = useState([119]);
   const [resetArme, setResetArme] = useState(false);
   const [notifs, setNotifs] = useState(false);
+  // Tenue dans l'etat, et pas relue au rendu : la reponse a la demande arrive
+  // apres coup, et sans elle le texte affiche resterait celui d'avant.
+  const [permission, setPermission] = useState(() => permissionNotifs());
 
   useEffect(() => {
     loadState().then((s) => {
       setAppris(s.appris || []);
       setSuivies(s.suivies || [119]);
-      // La permission se revoque depuis le navigateur, sans prevenir la page :
-      // le reglage garde ne vaut que si elle tient toujours.
-      setNotifs(!!s.notifs && permissionNotifs() === "granted");
+      /* Le reglage ne depend plus de la permission systeme : sans elle, il
+         reste le bandeau dans la page. Une permission revoquee depuis le
+         navigateur degrade donc le service au lieu de l'eteindre. */
+      setNotifs(!!s.notifs);
     });
   }, []);
 
-  useAvertissements(suivies, notifs);
+  const { bandeaux, ecarter } = useAvertissements(suivies, notifs);
 
   // Bilans victoires/defaites : une seule requete pour les 30 equipes,
   // base de la cote de rencontre (log5).
@@ -4449,17 +4604,12 @@ export default function App() {
      l'exige, et Chrome ignore les demandes spontanees. D'ou l'appel depuis le
      gestionnaire de l'interrupteur, et surtout pas depuis un effet. */
   const majNotifs = async (v) => {
-    if (!v) {
-      setNotifs(false);
-      saveState({ notifs: false });
-      return;
-    }
-    const p = permissionNotifs() === "granted" ? "granted" : await demanderNotifs();
-    // Un refus laisse l'interrupteur eteint : le rallumer sans permission
-    // promettrait des avertissements qui ne viendraient jamais.
-    const ok = p === "granted";
-    setNotifs(ok);
-    saveState({ notifs: ok });
+    setNotifs(v);
+    saveState({ notifs: v });
+    /* On demande la permission au passage, mais son refus n'annule plus
+       l'activation : le bandeau dans la page ne demande rien a personne, et
+       c'est le seul canal disponible sur Safari iOS et Chrome Android. */
+    if (v && permissionNotifs() === "default") setPermission(await demanderNotifs());
   };
 
   const vider = async () => {
@@ -4596,9 +4746,14 @@ ${POLICES}
             stades={stades}
             notifs={notifs}
             setNotifs={majNotifs}
+            permission={permission}
           />
         )}
         </Garde>
+
+        {/* Hors de la garde : un bandeau ne doit pas disparaitre parce que la
+            vue qu'il surplombe s'est interrompue. */}
+        <PileBandeaux bandeaux={bandeaux} ecarter={ecarter} />
 
         <footer
           style={{
@@ -4666,8 +4821,8 @@ export {
   VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,
   // avertissements d'avant-match
-  notificationsADeclencher, purgerVues, ReglageAvertissements,
-  AVANT_MATCH, PEREMPTION, SANS_SUITE, CADENCE_VEILLE, CADENCE_REPOS,
+  notificationsADeclencher, purgerVues, ReglageAvertissements, texteAvertissements,
+  PileBandeaux, AVANT_MATCH, PEREMPTION, SANS_SUITE, CADENCE_VEILLE, CADENCE_REPOS,
   // garde-fous transverses
   Garde, jourParis, jsonMlb, TZ,
 };
