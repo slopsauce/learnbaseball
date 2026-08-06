@@ -409,6 +409,59 @@ function fabriquerQuestion(sightings, dejaVues = [], alea = Math.random) {
   return { action: tire, bon, options: melanger([bon, ...distracteurs], alea) };
 }
 
+/* ------------------------------------------------------------------ *
+ *  CHOIX DE L'EQUIPE
+ *  Le meme menu sert au carnet et aux effectifs. Les equipes suivies
+ *  sont remontees dans leur propre groupe : trente entrees dans un
+ *  ordre alphabetique, c'est un balayage a chaque visite.
+ *  L'identifiant est passe par l'appelant — deux menus sur une meme
+ *  page auraient sinon le meme `for`, et le libelle ne designerait plus
+ *  rien de sur.
+ * ------------------------------------------------------------------ */
+function ChoixEquipe({ id, libelle, teams, suivies = [], valeur, onChange }) {
+  return (
+    <div style={{ margin: "0 0 22px", display: "flex", alignItems: "center", gap: 10 }}>
+      <label
+        htmlFor={id}
+        style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".16em", color: T.dim }}
+      >
+        {libelle}
+      </label>
+      <Img src={CAP(valeur)} alt="" size={26} />
+      <select
+        id={id}
+        className="alm-sel"
+        value={valeur}
+        onChange={(e) => onChange(Number(e.target.value))}
+        style={{
+          fontFamily: FF_MONO, fontSize: 12, color: T.chalk,
+          background: "rgba(11,36,26,.7)", border: "1px solid rgba(239,243,234,.28)",
+          padding: "6px 10px", borderRadius: 2, cursor: "pointer",
+        }}
+      >
+        {(() => {
+          const liste = teams.length ? teams : [{ id: 119, name: "Los Angeles Dodgers" }];
+          const mes = liste.filter((t) => suivies.includes(t.id));
+          const reste = liste.filter((t) => !suivies.includes(t.id));
+          const opt = (t) => (
+            <option key={t.id} value={t.id} style={{ color: "#111" }}>
+              {t.name}
+            </option>
+          );
+          return mes.length ? (
+            <>
+              <optgroup label="Que je suis">{mes.map(opt)}</optgroup>
+              <optgroup label="Les autres">{reste.map(opt)}</optgroup>
+            </>
+          ) : (
+            liste.map(opt)
+          );
+        })()}
+      </select>
+    </div>
+  );
+}
+
 /* ================================================================== *
  *  VUE « LE CARNET »
  * ================================================================== */
@@ -582,45 +635,14 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
       </div>
 
       {/* ---------- quelle equipe on etudie ---------- */}
-      <div style={{ margin: "0 0 22px", display: "flex", alignItems: "center", gap: 10 }}>
-        <label
-          htmlFor="eq"
-          style={{ fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".16em", color: T.dim }}
-        >
-          D'APRÈS
-        </label>
-        <Img src={CAP(teamId)} alt="" size={26} />
-        <select
-          id="eq"
-          className="alm-sel"
-          value={teamId}
-          onChange={(e) => setTeamId(Number(e.target.value))}
-          style={{
-            fontFamily: FF_MONO, fontSize: 12, color: T.chalk,
-            background: "rgba(11,36,26,.7)", border: "1px solid rgba(239,243,234,.28)",
-            padding: "6px 10px", borderRadius: 2, cursor: "pointer",
-          }}
-        >
-          {(() => {
-            const liste = teams.length ? teams : [{ id: 119, name: "Los Angeles Dodgers" }];
-            const mes = liste.filter((t) => suivies.includes(t.id));
-            const reste = liste.filter((t) => !suivies.includes(t.id));
-            const opt = (t) => (
-              <option key={t.id} value={t.id} style={{ color: "#111" }}>
-                {t.name}
-              </option>
-            );
-            return mes.length ? (
-              <>
-                <optgroup label="Que je suis">{mes.map(opt)}</optgroup>
-                <optgroup label="Les autres">{reste.map(opt)}</optgroup>
-              </>
-            ) : (
-              liste.map(opt)
-            );
-          })()}
-        </select>
-      </div>
+      <ChoixEquipe
+        id="eq"
+        libelle="D'APRÈS"
+        teams={teams}
+        suivies={suivies}
+        valeur={teamId}
+        onChange={setTeamId}
+      />
 
       {phase === "load" && (
         <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
@@ -4085,6 +4107,367 @@ function VueDirect({ teams, suivies = [] }) {
 }
 
 /* ================================================================== *
+ *  VUE « LES ÉQUIPES »
+ *  Qui joue, ou, et ce qu'il vaut cette saison. Une seule requete :
+ *  /roster porte deja la fiche de chaque joueur et ses statistiques,
+ *  via `hydrate` — trente appels a /people evites.
+ * ================================================================== */
+
+/* `fields` n'est pas une coquetterie : la meme reponse pese 70 Ko sans
+   lui, 18 avec. C'est une liste blanche de NOMS de champs, appliquee a
+   toute la profondeur du document — d'ou la presence de cles aussi
+   banales que `id`, `name` ou `code`, reclamees par plusieurs niveaux. */
+const CHAMPS_EFFECTIF =
+  "roster,person,id,fullName,primaryNumber,currentAge,height,weight,batSide,pitchHand," +
+  "code,stats,group,displayName,splits,stat,team,sport,numTeams,avg,ops,homeRuns,rbi,stolenBases," +
+  "era,wins,losses,saves,strikeOuts,inningsPitched,whip,gamesPlayed," +
+  "position,abbreviation,type,name,status,description,jerseyNumber";
+
+/* Les numeros du carnet de marque valent pour la defense (1 lanceur,
+   2 receveur…), mais le poste affiche doit se lire sans le decoder. */
+const POSTE_FR = {
+  P: "lanceur", SP: "lanceur partant", RP: "releveur",
+  C: "receveur",
+  "1B": "premier but", "2B": "deuxième but", "3B": "troisième but", SS: "arrêt-court",
+  IF: "champ intérieur",
+  LF: "champ gauche", CF: "champ centre", RF: "champ droit", OF: "voltigeur",
+  DH: "frappeur désigné", TWP: "lanceur et frappeur",
+  PH: "frappeur suppléant", PR: "coureur suppléant",
+};
+
+/* L'ordre de lecture d'une feuille de match : la batterie d'abord, puis
+   le champ en s'eloignant du marbre. `position.type` est le regroupement
+   que l'API donne elle-meme ; « Autres » ramasse ce qu'elle inventerait. */
+const GROUPES_POSTE = [
+  ["Pitcher", "Les lanceurs"],
+  ["Catcher", "Derrière le marbre"],
+  ["Infielder", "Le champ intérieur"],
+  ["Outfielder", "Le champ extérieur"],
+  ["Two-Way Player", "Les deux casquettes"],
+  ["Hitter", "Frappeurs désignés"],
+  ["Autres", "Les autres"],
+];
+
+/* Le statut arrive en anglais et en jargon de transaction. On traduit ce
+   qui se rencontre vraiment, et on laisse passer le reste tel quel plutot
+   que d'afficher un vide : mieux vaut un terme anglais qu'aucune mention
+   qu'un joueur n'est pas disponible. */
+function statutEffectif(desc = "") {
+  const s = String(desc || "").trim();
+  if (!s || /^active$/i.test(s)) return null;
+  const il = s.match(/injured\s+(\d+)-day/i);
+  if (il) return `blessé — liste ${il[1]} jours`;
+  if (/injured/i.test(s)) return "blessé";
+  if (/minors|minor league/i.test(s)) return "en ligues mineures";
+  if (/restricted/i.test(s)) return "liste restreinte";
+  if (/paternity/i.test(s)) return "congé paternité";
+  if (/bereavement/i.test(s)) return "congé familial";
+  if (/suspend/i.test(s)) return "suspendu";
+  if (/designated/i.test(s)) return "retiré de l'effectif";
+  return s.toLowerCase();
+}
+
+/* Un joueur echange en cours de saison a une ligne de statistiques par club,
+   PLUS une ligne de total — sans club, avec `numTeams` renseigne. C'est le
+   total qu'on affiche : la ligne du club actuel donnerait « MOY .000 » a un
+   titulaire arrive la semaine derniere, ce qui se lit comme une panne et non
+   comme deux matchs joues. La ligne du club consulte reste le repli, au cas
+   ou l'API cesserait de calculer ce total.
+   Le filtre sur le sport ecarte les statistiques de ligues mineures : melangees
+   aux majeures, elles gonflent des chiffres qu'on presente comme ceux de MLB. */
+function statsSaison(person, teamId) {
+  const prendre = (groupe) => {
+    const bloc = (person?.stats || []).find((s) => s.group?.displayName === groupe);
+    const splits = (bloc?.splits || []).filter((s) => (s.sport?.id ?? 1) === 1);
+    if (!splits.length) return null;
+    const total = splits.find((s) => !s.team?.id && s.numTeams > 1);
+    const s = total || splits.find((x) => x.team?.id === teamId) || splits[splits.length - 1];
+    return s?.stat || null;
+  };
+  return { frappe: prendre("hitting"), lance: prendre("pitching") };
+}
+
+/* Repartition par poste, dans l'ordre de GROUPES_POSTE. Le tri interne
+   suit le numero de maillot quand il existe : c'est l'ordre du programme
+   distribue au stade, et il ne bouge pas d'un jour a l'autre. */
+function grouperEffectif(roster = []) {
+  const connus = new Set(GROUPES_POSTE.map(([t]) => t));
+  const par = new Map();
+  for (const m of roster) {
+    const t = connus.has(m.position?.type) ? m.position.type : "Autres";
+    if (!par.has(t)) par.set(t, []);
+    par.get(t).push(m);
+  }
+  const num = (m) => {
+    const n = Number(m.jerseyNumber ?? m.person?.primaryNumber);
+    return Number.isFinite(n) ? n : 999;
+  };
+  return GROUPES_POSTE.filter(([t]) => par.has(t)).map(([t, libelle]) => ({
+    type: t,
+    libelle,
+    membres: par.get(t).sort(
+      (a, b) => num(a) - num(b) || String(a.person?.fullName).localeCompare(String(b.person?.fullName))
+    ),
+  }));
+}
+
+function FicheJoueur({ m, teamId }) {
+  const p = m.person || {};
+  const abbr = m.position?.abbreviation;
+  const poste = POSTE_FR[abbr] || m.position?.name?.toLowerCase() || "";
+  const numero = m.jerseyNumber || p.primaryNumber;
+  const statut = statutEffectif(m.status?.description);
+  const { frappe, lance } = statsSaison(p, teamId);
+  const lanceur = m.position?.type === "Pitcher" || m.position?.type === "Two-Way Player";
+
+  const bat = COTE[p.batSide?.code];
+  const lance_ = COTE[p.pitchHand?.code];
+
+  return (
+    <div
+      style={{
+        display: "flex", gap: 10, alignItems: "center", minWidth: 0,
+        background: "rgba(11,36,26,.55)", border: "1px solid rgba(239,243,234,.16)",
+        borderRadius: 3, padding: "9px 11px",
+        opacity: statut ? 0.72 : 1,
+      }}
+    >
+      <Img
+        src={PORTRAIT(p.id)}
+        alt=""
+        size={44}
+        rond
+        style={{ background: "rgba(239,243,234,.09)" }}
+      />
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          {numero && (
+            <span style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim }}>{numero}</span>
+          )}
+          <span style={{ fontSize: 14.5, lineHeight: 1.25, color: T.chalk }}>{p.fullName}</span>
+        </div>
+        <div style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, marginTop: 2 }}>
+          {[poste, bat && `frappe ${bat}`, lance_ && `lance ${lance_}`, p.currentAge && `${p.currentAge} ans`]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+
+        {lanceur && lance ? (
+          <div
+            title={`ERA ${lance.era} — points mérités accordés toutes les neuf manches. Bilan ${lance.wins}-${lance.losses}, ${lance.strikeOuts} retraits sur prises en ${lance.inningsPitched} manches.`}
+            style={{
+              fontFamily: FF_MONO, fontSize: 10, marginTop: 3,
+              color: couleurEra(lance.era), cursor: "help",
+            }}
+          >
+            ERA {lance.era} · {lance.wins}-{lance.losses}
+            {lance.saves ? ` · ${lance.saves} sauv.` : ""} · {lance.strikeOuts} K
+          </div>
+        ) : frappe ? (
+          <div
+            title={`Moyenne au bâton ${frappe.avg} sur ${frappe.gamesPlayed} matchs, ${frappe.homeRuns} circuits, ${frappe.rbi} points produits, OPS ${frappe.ops}.`}
+            style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 3, cursor: "help" }}
+          >
+            MOY {frappe.avg} · {frappe.homeRuns} CC · {frappe.rbi} PP
+            {frappe.stolenBases ? ` · ${frappe.stolenBases} BV` : ""}
+          </div>
+        ) : (
+          <div style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 3 }}>
+            aucune apparition cette saison
+          </div>
+        )}
+
+        {statut && (
+          <div style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.clay, marginTop: 3 }}>
+            {statut}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = null }) {
+  const premiere = () => {
+    const c = Number(cible);
+    return Number.isFinite(c) && c > 0 ? c : suivies[0] || 119;
+  };
+  const [teamId, setTeamId] = useState(premiere);
+  /* Meme mecanique que les terrains : #equipes/147 doit ouvrir la bonne
+     franchise, y compris quand le fragment change sans remontage — au
+     bouton « precedent », notamment. On se resynchronise pendant le rendu
+     plutot que dans un effet, pour ne pas valider un ecran intermediaire
+     ou l'ancienne equipe serait encore affichee. */
+  const [cibleVue, setCibleVue] = useState(cible);
+  if (cible !== cibleVue) {
+    setCibleVue(cible);
+    const c = Number(cible);
+    if (Number.isFinite(c) && c > 0) setTeamId(c);
+  }
+
+  const [complet, setComplet] = useState(false); // effectif actif | les 40
+  const [roster, setRoster] = useState([]);
+  const [phase, setPhase] = useState("load"); // load | ok | vide | erreur
+  const [erreur, setErreur] = useState("");
+
+  const charger = useCallback(async (tid, tout) => {
+    setPhase("load");
+    setErreur("");
+    try {
+      const d = await jsonMlb(
+        `${API}/teams/${tid}/roster?rosterType=${tout ? "40Man" : "active"}` +
+          `&hydrate=person(stats(type=season))&fields=${CHAMPS_EFFECTIF}`
+      );
+      const liste = (d.roster || []).filter((m) => m.person?.id);
+      setRoster(liste);
+      setPhase(liste.length ? "ok" : "vide");
+    } catch (e) {
+      setErreur(String(e?.message || e));
+      setPhase("erreur");
+    }
+  }, []);
+
+  useEffect(() => {
+    // `charger` bascule en etat « chargement » avant de partir sur le reseau :
+    // la regle lit un enchainement de rendus la ou il n'y a qu'un passage en
+    // attente, voulu et visible.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    charger(teamId, complet);
+  }, [teamId, complet, charger]);
+
+  const equipe = teams.find((t) => t.id === teamId) || null;
+  const bilan = bilans[teamId];
+  const stade = equipe?.venue?.id ? stades[equipe.venue.id] : null;
+  const groupes = useMemo(() => grouperEffectif(roster), [roster]);
+  const dispo = roster.filter((m) => !statutEffectif(m.status?.description)).length;
+
+  return (
+    <div className="alm-rise">
+      <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 16px" }}>
+        Qui compose une franchise, poste par poste. L'effectif actif est celui des vingt-six joueurs
+        utilisables cette nuit ; la liste des quarante ajoute les blessés et ceux qu'on a renvoyés en
+        ligues mineures — c'est le vivier dans lequel le club puise sans passer par un échange.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[[false, "L'effectif actif"], [true, "Les quarante"]].map(([v, lib]) => (
+          <button
+            key={String(v)}
+            className="alm-btn"
+            onClick={() => setComplet(v)}
+            aria-pressed={complet === v}
+            style={btnStyle(complet === v)}
+          >
+            {lib}
+          </button>
+        ))}
+      </div>
+
+      <ChoixEquipe
+        id="eq-effectif"
+        libelle="L'ÉQUIPE"
+        teams={teams}
+        suivies={suivies}
+        valeur={teamId}
+        onChange={setTeamId}
+      />
+
+      {equipe && (
+        <div
+          style={{
+            fontFamily: FF_MONO, fontSize: 11, color: T.dim,
+            margin: "0 0 18px", lineHeight: 1.7,
+          }}
+        >
+          <span style={{ color: T.chalk, fontSize: 13 }}>{equipe.name}</span>
+          {equipe.division?.name ? ` · ${DIVISION_FR(equipe.division.name)}` : ""}
+          {bilan ? ` · ${bilan.v}-${bilan.d}` : ""}
+          {bilan?.rang ? ` · ${RANG_FR(bilan.rang)} de division` : ""}
+          {stade?.nom ? (
+            <>
+              {" · "}
+              <LienStade idStade={equipe.venue.id} nom={stade.nom} style={{ fontSize: 11 }} />
+            </>
+          ) : null}
+        </div>
+      )}
+
+      {phase === "load" && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
+          Lecture de la feuille d'effectif…
+        </p>
+      )}
+
+      {phase === "erreur" && (
+        <div style={{ border: `1px solid ${T.clay}`, padding: 18, borderRadius: 3 }}>
+          <p style={{ margin: 0, fontSize: 15 }}>
+            L'effectif n'est pas arrivé. L'API de MLB n'a pas répondu.
+          </p>
+          <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, margin: "8px 0 14px" }}>
+            {erreur}
+          </p>
+          <button className="alm-btn" onClick={() => charger(teamId, complet)} style={btnStyle(true)}>
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {phase === "vide" && (
+        <p style={{ fontSize: 16 }}>
+          {complet
+            ? "Aucun joueur sous contrat majeur pour cette équipe en ce moment."
+            : "L'effectif actif n'est pas publié hors saison : la ligue ne tient à jour que la liste des quarante. Bascule dessus pour voir qui est sous contrat."}
+        </p>
+      )}
+
+      {phase === "ok" && (
+        <>
+          <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, margin: "0 0 14px" }}>
+            {roster.length} joueur{roster.length > 1 ? "s" : ""}
+            {complet && dispo < roster.length ? ` · ${dispo} disponibles` : ""}
+          </p>
+
+          {groupes.map((g) => (
+            <section key={g.type} style={{ marginBottom: 26 }}>
+              <h2
+                style={{
+                  fontFamily: FF_DISPLAY, fontSize: 22, fontWeight: 700, textTransform: "uppercase",
+                  letterSpacing: ".04em", margin: "0 0 10px", color: T.chalk,
+                  borderBottom: "1px solid rgba(239,243,234,.16)", paddingBottom: 5,
+                }}
+              >
+                {g.libelle}
+                <span style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginLeft: 8 }}>
+                  {g.membres.length}
+                </span>
+              </h2>
+              <div
+                style={{
+                  display: "grid", gap: 8,
+                  gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+                }}
+              >
+                {g.membres.map((m) => (
+                  <FicheJoueur key={m.person.id} m={m} teamId={teamId} />
+                ))}
+              </div>
+            </section>
+          ))}
+
+          <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, lineHeight: 1.7 }}>
+            <strong>MOY</strong> : moyenne au bâton — coups sûrs par présence officielle.{" "}
+            <strong>CC</strong> : circuits. <strong>PP</strong> : points produits.{" "}
+            <strong>BV</strong> : buts volés. <strong>ERA</strong> : points mérités accordés toutes
+            les neuf manches, la note d'un lanceur — moyenne de ligue autour de 4,10.{" "}
+            <strong>K</strong> : retraits sur prises.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
 /* ------------------------------------------------------------------ *
@@ -4098,9 +4481,13 @@ const ALIAS = {
   programme: "nuits", nuits: "nuits", calendrier: "nuits",
   carnet: "carnet", almanach: "carnet", notions: "carnet",
   terrains: "terrains", stades: "terrains", parcs: "terrains", carte: "terrains",
+  equipes: "equipes", equipe: "equipes", effectif: "equipes", roster: "equipes", joueurs: "equipes",
   direct: "direct", live: "direct", "en-cours": "direct",
 };
-const FRAGMENT = { nuits: "programme", carnet: "carnet", terrains: "terrains", direct: "direct" };
+const FRAGMENT = {
+  nuits: "programme", carnet: "carnet", terrains: "terrains",
+  equipes: "equipes", direct: "direct",
+};
 
 /* La consultation passe par hasOwn : sans lui, « #constructor » ou
    « #toString » remontent la chaine de prototypes et renvoient une fonction
@@ -4713,6 +5100,7 @@ ${POLICES}
             ["carnet", "Le carnet"],
             ["nuits", "Le programme"],
             ["terrains", "Les terrains"],
+            ["equipes", "Les équipes"],
             ["direct", "Le direct"],
           ].map(([id, libelle]) => (
             <Onglet key={id} id={id} actif={onglet === id} onChoisir={changerOnglet}>
@@ -4731,6 +5119,14 @@ ${POLICES}
             stades={stades}
             stadeHabituel={stadeHabituel}
             suivies={suivies}
+            cible={cible}
+          />
+        ) : onglet === "equipes" ? (
+          <VueEquipes
+            teams={teams}
+            suivies={suivies}
+            bilans={bilans}
+            stades={stades}
             cible={cible}
           />
         ) : onglet === "carnet" ? (
@@ -4810,6 +5206,9 @@ export {
   cibleDepuisFragment, AffichesDuSoir, LienStade, enPi, distancesCloture, BandeauSituation,
   WIKI_STADES, lienWiki,
   VueDirect, BasesOccupees, Compteurs, TableauManches, CHAMPS_DIRECT, CADENCE_DIRECT, classerMatch,
+  // vue « les equipes »
+  VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
+  GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »

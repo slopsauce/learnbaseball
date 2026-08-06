@@ -2,7 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import App, { VueNuits, VueAlmanach, VueTerrains, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, FicheJoueur, ChoixEquipe, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -107,6 +107,94 @@ describe("rendu de la vue Terrains", () => {
       rendre(React.createElement(VueTerrains, {
         teams: [equipe], stades: { 22: { nom: "X" } }, stadeHabituel: {},
       })));
+  });
+});
+
+describe("rendu de la vue Équipes", () => {
+  const lanceur = {
+    person: {
+      id: 681911, fullName: "Alex Vesia", primaryNumber: "51", currentAge: 30,
+      batSide: { code: "L" }, pitchHand: { code: "L" },
+      stats: [{
+        group: { displayName: "pitching" },
+        splits: [{ team: { id: 119 }, stat: { era: "3.03", wins: 1, losses: 1, saves: 3, strikeOuts: 53, inningsPitched: "38.2" } }],
+      }],
+    },
+    jerseyNumber: "51",
+    position: { type: "Pitcher", abbreviation: "P", name: "Pitcher" },
+    status: { description: "Active" },
+  };
+  const frappeur = {
+    person: {
+      id: 669743, fullName: "Alex Call", primaryNumber: "12", currentAge: 31,
+      batSide: { code: "R" }, pitchHand: { code: "R" },
+      stats: [{
+        group: { displayName: "hitting" },
+        splits: [{ team: { id: 119 }, stat: { avg: ".246", homeRuns: 1, rbi: 16, ops: ".676", gamesPlayed: 65, stolenBases: 1 } }],
+      }],
+    },
+    jerseyNumber: "12",
+    position: { type: "Outfielder", abbreviation: "LF", name: "Outfielder" },
+    status: { description: "Injured 10-Day" },
+  };
+
+  test("se rend sans données", () => {
+    assert.ok(rendre(React.createElement(VueEquipes, { teams: [], suivies: [] })).length > 100);
+  });
+
+  test("se rend avec une équipe complète", () => {
+    const html = rendre(React.createElement(VueEquipes, {
+      teams: [equipe], suivies: [119], bilans: bilan, stades,
+    }));
+    assert.match(html, /Los Angeles Dodgers/);
+    assert.match(html, /NL Ouest/, "la division doit être en français");
+    assert.match(html, /67-39/, "le bilan de l'équipe doit apparaître");
+    assert.match(html, /Dodger Stadium/, "le parc doit renvoyer vers les terrains");
+  });
+
+  test("le menu déroulant sépare les équipes suivies", () => {
+    const html = rendre(React.createElement(ChoixEquipe, {
+      id: "x", libelle: "L'ÉQUIPE", teams: [equipe], suivies: [119], valeur: 119, onChange: () => {},
+    }));
+    assert.match(html, /Que je suis/);
+    assert.match(html, /<select/);
+  });
+
+  test("le menu fonctionne sans aucune équipe suivie", () => {
+    const html = rendre(React.createElement(ChoixEquipe, {
+      id: "x", libelle: "L'ÉQUIPE", teams: [equipe], suivies: [], valeur: 119, onChange: () => {},
+    }));
+    assert.doesNotMatch(html, /Que je suis/);
+    assert.match(html, /Los Angeles Dodgers/);
+  });
+
+  test("une fiche de lanceur montre son ERA et son bilan", () => {
+    const html = rendre(React.createElement(FicheJoueur, { m: lanceur, teamId: 119 }));
+    assert.match(html, /Alex Vesia/);
+    assert.match(html, /ERA 3.03/);
+    assert.match(html, /1-1/);
+    assert.match(html, /53 K/);
+    assert.match(html, /lance gaucher/);
+  });
+
+  test("une fiche de frappeur montre sa moyenne, pas un ERA", () => {
+    const html = rendre(React.createElement(FicheJoueur, { m: frappeur, teamId: 119 }));
+    assert.match(html, /MOY .246/);
+    assert.match(html, /1 CC/);
+    assert.match(html, /16 PP/);
+    assert.doesNotMatch(html, /ERA/, "un voltigeur n'a pas d'ERA à afficher");
+  });
+
+  test("une indisponibilité est dite, en français", () => {
+    assert.match(rendre(React.createElement(FicheJoueur, { m: frappeur, teamId: 119 })),
+      /blessé — liste 10 jours/);
+  });
+
+  test("un joueur sans statistiques ne casse pas la fiche", () => {
+    const nu = { person: { id: 1, fullName: "Recrue" }, position: { type: "Infielder", abbreviation: "SS" }, status: {} };
+    const html = rendre(React.createElement(FicheJoueur, { m: nu, teamId: 119 }));
+    assert.match(html, /Recrue/);
+    assert.match(html, /aucune apparition/);
   });
 });
 

@@ -399,6 +399,10 @@ describe("adressage par fragment d'URL", () => {
     for (const h of ["#carnet", "#almanach", "#notions", "#/carnet"])
       assert.equal(A.ongletDepuisFragment(h), "carnet", `alias non reconnu : ${h}`);
   });
+  test("les alias des équipes aussi", () => {
+    for (const h of ["#equipes", "#equipe", "#effectif", "#roster", "#joueurs", "#/equipes", "#EQUIPES"])
+      assert.equal(A.ongletDepuisFragment(h), "equipes", `alias non reconnu : ${h}`);
+  });
   test("un fragment absent ou farfelu retombe sur le carnet", () => {
     for (const h of ["", "#", null, undefined, "#nawak", "#../../etc/passwd", "#<script>"])
       assert.equal(A.ongletDepuisFragment(h), "carnet", `repli manquant pour ${JSON.stringify(h)}`);
@@ -747,6 +751,8 @@ describe("cible dans le fragment d'URL", () => {
   test("l'onglet reste correct malgré la cible", () => {
     assert.equal(A.ongletDepuisFragment("#terrains/5325"), "terrains");
     assert.equal(A.ongletDepuisFragment("#programme/xyz"), "nuits");
+    assert.equal(A.ongletDepuisFragment("#equipes/119"), "equipes");
+    assert.equal(A.cibleDepuisFragment("#equipes/119"), "119");
   });
   test("un fragment à cible inconnue retombe sur le carnet", () => {
     assert.equal(A.ongletDepuisFragment("#nawak/5325"), "carnet");
@@ -1442,5 +1448,124 @@ describe("ce que le reglage promet", () => {
     // de la permission, il doit figurer dans la promesse.
     for (const permission of ["granted", "denied", "absent", "default", "n'importe quoi"])
       assert.match(t({ permission }), /bandeau dans la page/, permission);
+  });
+});
+
+describe("l'effectif d'une équipe", () => {
+  const membre = (o = {}) => ({
+    person: { id: 1, fullName: "Test Joueur", ...(o.person || {}) },
+    jerseyNumber: o.jerseyNumber,
+    position: o.position || { type: "Pitcher", abbreviation: "P", name: "Pitcher" },
+    status: o.status || { description: "Active" },
+  });
+
+  test("un joueur actif ne porte aucune mention", () => {
+    for (const d of ["Active", "active", "", null, undefined])
+      assert.equal(A.statutEffectif(d), null, `mention parasite pour ${JSON.stringify(d)}`);
+  });
+
+  test("les indisponibilités sont traduites", () => {
+    assert.equal(A.statutEffectif("Injured 10-Day"), "blessé — liste 10 jours");
+    assert.equal(A.statutEffectif("Injured 60-Day"), "blessé — liste 60 jours");
+    assert.equal(A.statutEffectif("Reassigned to Minors"), "en ligues mineures");
+    assert.equal(A.statutEffectif("Restricted List"), "liste restreinte");
+    assert.equal(A.statutEffectif("Paternity"), "congé paternité");
+  });
+
+  test("un statut inconnu passe tel quel plutôt que de disparaître", () => {
+    // Taire une indisponibilite serait pire que l'afficher en anglais.
+    assert.equal(A.statutEffectif("Trade Pending"), "trade pending");
+  });
+
+  test("un joueur échangé montre son total, pas ses deux matchs ici", () => {
+    // Cas reel : arrive du club 147 la semaine derniere, 2 matchs joues.
+    // Afficher « .000 » a cote de son nom se lirait comme une panne.
+    const person = {
+      stats: [{
+        group: { displayName: "hitting" },
+        splits: [
+          { numTeams: 2, stat: { avg: ".229", homeRuns: 2 } },
+          { team: { id: 147 }, stat: { avg: ".234", homeRuns: 2 } },
+          { team: { id: 119 }, stat: { avg: ".000", homeRuns: 0 } },
+        ],
+      }],
+    };
+    assert.equal(A.statsSaison(person, 119).frappe.avg, ".229");
+  });
+
+  test("sans ligne de total, on retombe sur celle du club consulté", () => {
+    const person = {
+      stats: [{
+        group: { displayName: "hitting" },
+        splits: [
+          { team: { id: 147 }, stat: { avg: ".200" } },
+          { team: { id: 119 }, stat: { avg: ".310" } },
+        ],
+      }],
+    };
+    assert.equal(A.statsSaison(person, 119).frappe.avg, ".310");
+    assert.equal(A.statsSaison(person, 147).frappe.avg, ".200");
+    // Club absent des lignes : on montre la derniere plutot que rien.
+    assert.equal(A.statsSaison(person, 108).frappe.avg, ".310");
+  });
+
+  test("les lignes de ligues mineures ne passent pas pour de la MLB", () => {
+    const person = {
+      stats: [{
+        group: { displayName: "hitting" },
+        splits: [
+          { sport: { id: 11 }, team: { id: 260 }, stat: { avg: ".412" } },
+          { sport: { id: 1 }, team: { id: 119 }, stat: { avg: ".198" } },
+        ],
+      }],
+    };
+    assert.equal(A.statsSaison(person, 119).frappe.avg, ".198");
+    // Rien qu'en mineures : aucune statistique majeure a montrer.
+    assert.equal(A.statsSaison({ stats: [{ group: { displayName: "hitting" },
+      splits: [{ sport: { id: 11 }, stat: { avg: ".412" } }] }] }, 119).frappe, null);
+  });
+
+  test("un joueur sans apparition ne fabrique pas de statistiques", () => {
+    assert.deepEqual(A.statsSaison({ stats: [] }, 119), { frappe: null, lance: null });
+    assert.deepEqual(A.statsSaison(null, 119), { frappe: null, lance: null });
+    assert.equal(A.statsSaison({ stats: [{ group: { displayName: "hitting" }, splits: [] }] }, 119).frappe, null);
+  });
+
+  test("le regroupement suit l'ordre d'une feuille de match", () => {
+    const g = A.grouperEffectif([
+      membre({ position: { type: "Outfielder", abbreviation: "CF" } }),
+      membre({ position: { type: "Pitcher", abbreviation: "P" } }),
+      membre({ position: { type: "Catcher", abbreviation: "C" } }),
+    ]);
+    assert.deepEqual(g.map((x) => x.type), ["Pitcher", "Catcher", "Outfielder"]);
+    // Aucun groupe vide : on n'affiche pas un titre sans personne dessous.
+    assert.ok(g.every((x) => x.membres.length > 0));
+  });
+
+  test("un type de poste inattendu n'est pas perdu", () => {
+    const g = A.grouperEffectif([membre({ position: { type: "Coach", abbreviation: "X" } })]);
+    assert.equal(g.length, 1);
+    assert.equal(g[0].type, "Autres");
+  });
+
+  test("les joueurs sont triés par numéro de maillot", () => {
+    const g = A.grouperEffectif([
+      membre({ jerseyNumber: "51", person: { id: 3, fullName: "C" } }),
+      membre({ jerseyNumber: "7", person: { id: 1, fullName: "A" } }),
+      membre({ jerseyNumber: undefined, person: { id: 2, fullName: "B" } }),
+    ]);
+    assert.deepEqual(g[0].membres.map((m) => m.person.fullName), ["A", "C", "B"]);
+  });
+
+  test("chaque poste affiché a une traduction", () => {
+    for (const p of ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH", "TWP"])
+      assert.ok(A.POSTE_FR[p], `poste ${p} sans libellé français`);
+  });
+
+  test("le filtre de champs couvre ce que la vue affiche", () => {
+    // Un champ absent de la liste blanche n'arrive tout simplement pas.
+    for (const c of ["fullName", "jerseyNumber", "batSide", "pitchHand", "currentAge",
+                     "avg", "homeRuns", "rbi", "era", "wins", "losses", "strikeOuts", "team"])
+      assert.match(A.CHAMPS_EFFECTIF, new RegExp(`\\b${c}\\b`), `champ ${c} non demandé à l'API`);
   });
 });

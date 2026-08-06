@@ -102,6 +102,56 @@ describe("contrat : /teams et /venues", () => {
   });
 });
 
+describe("contrat : /roster", () => {
+  /* La vue « les equipes » tient sur une seule requete : le roster porte la
+     fiche de chaque joueur et ses statistiques, via hydrate. Si l'hydratation
+     ou le filtre de champs changeaient de forme, la vue se viderait sans une
+     seule erreur reseau — d'ou ce contrat. */
+  const CHAMPS =
+    "roster,person,id,fullName,primaryNumber,currentAge,height,weight,batSide,pitchHand," +
+    "code,stats,group,displayName,splits,stat,team,sport,numTeams,avg,ops,homeRuns,rbi,stolenBases," +
+    "era,wins,losses,saves,strikeOuts,inningsPitched,whip,gamesPlayed," +
+    "position,abbreviation,type,name,status,description,jerseyNumber";
+
+  test("les quarante portent poste, statut et numero", async () => {
+    const d = await j(`${API}/teams/119/roster?rosterType=40Man&fields=${CHAMPS}`);
+    assert.ok(d.roster?.length > 20, `effectif de ${d.roster?.length ?? 0} joueurs`);
+    for (const m of d.roster) {
+      assert.ok(m.person?.id && m.person?.fullName, "identite incomplete");
+      assert.ok(m.position?.type && m.position?.abbreviation, `poste manquant : ${m.person?.fullName}`);
+      assert.ok(m.status?.description, `statut manquant : ${m.person?.fullName}`);
+    }
+    // Les regroupements de la vue viennent de position.type : un type inconnu
+    // tomberait dans « les autres » sans casser, mais on veut le savoir.
+    const connus = new Set(["Pitcher", "Catcher", "Infielder", "Outfielder", "Two-Way Player", "Hitter"]);
+    const inconnus = [...new Set(d.roster.map((m) => m.position.type))].filter((t) => !connus.has(t));
+    assert.deepEqual(inconnus, [], `types de poste nouveaux : ${inconnus.join(", ")}`);
+  });
+
+  test("l'hydratation ramene bien les statistiques de la saison", { skip: horsSaison }, async () => {
+    const d = await j(
+      `${API}/teams/119/roster?rosterType=active&hydrate=person(stats(type=season))&fields=${CHAMPS}`
+    );
+    const avec = d.roster.filter((m) => (m.person.stats || []).length);
+    assert.ok(avec.length, "aucune statistique hydratee — la vue afficherait des fiches nues");
+    const groupes = new Set(avec.flatMap((m) => m.person.stats.map((s) => s.group?.displayName)));
+    assert.ok(groupes.has("hitting") || groupes.has("pitching"),
+      `groupes recus : ${[...groupes].join(", ")}`);
+    const stat = avec.flatMap((m) => m.person.stats).flatMap((s) => s.splits || [])[0]?.stat || {};
+    assert.ok("avg" in stat || "era" in stat, "ni moyenne au baton ni ERA dans les splits");
+  });
+
+  test("le filtre de champs garde la reponse legere", async () => {
+    const url = `${API}/teams/119/roster?rosterType=active&hydrate=person(stats(type=season))`;
+    const [brut, filtre] = await Promise.all([
+      fetch(url).then((r) => r.text()),
+      fetch(`${url}&fields=${CHAMPS}`).then((r) => r.text()),
+    ]);
+    assert.ok(filtre.length < brut.length,
+      "le filtre `fields` ne filtre plus rien — la requete a quadruple de poids");
+  });
+});
+
 describe("contrat : donnees de match", { skip: horsSaison }, () => {
   let pk;
   before(async () => {
