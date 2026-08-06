@@ -467,6 +467,23 @@ function ChoixEquipe({ id, libelle, teams, suivies = [], valeur, onChange }) {
  * ================================================================== */
 function VueAlmanach({ teams, appris, setAppris, suivies }) {
   const [teamId, setTeamId] = useState(() => suivies[0] || 119);
+  /* `suivies` est relu du stockage APRES le premier rendu : au montage, c'est
+     encore la valeur par defaut. Sans ce rattrapage, qui suit une seule
+     franchise depouillait invariablement la feuille de match des Dodgers.
+     Il se declenche a l'arrivee des reglages, et jamais apres un choix de
+     l'utilisateur — sinon le stockage reprendrait la main sur le menu qu'on
+     vient de manipuler. Le meme dispositif tient l'onglet des equipes. */
+  const [choisiAlaMain, setChoisiAlaMain] = useState(false);
+  const [suiviesVues, setSuiviesVues] = useState(suivies[0]);
+  if (suivies[0] !== suiviesVues) {
+    setSuiviesVues(suivies[0]);
+    if (!choisiAlaMain && suivies[0]) setTeamId(suivies[0]);
+  }
+  const choisirEquipe = (id) => {
+    setChoisiAlaMain(true);
+    setTeamId(id);
+  };
+
   const [game, setGame] = useState(null);
   const [sightings, setSightings] = useState([]);
   const [idx, setIdx] = useState(0);
@@ -641,7 +658,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
         teams={teams}
         suivies={suivies}
         valeur={teamId}
-        onChange={setTeamId}
+        onChange={choisirEquipe}
       />
 
       {phase === "load" && (
