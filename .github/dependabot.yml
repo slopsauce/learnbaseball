@@ -1,0 +1,23 @@
+version: 2
+
+# Ce fichier ne pilote QUE les mises a jour de version. Les correctifs de
+# securite, eux, sont declenches par les alertes du depot et sont deja actifs
+# sans rien declarer ici — c'est pour ca qu'on n'y trouve pas npm : on veut les
+# rustines de securite (on les a), pas un flot de montees de version sur un
+# projet de cette taille.
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Paris"
+    # Une seule demande de fusion pour l'ensemble : les cinq actions du
+    # workflow montent souvent de version la meme semaine, et cinq demandes
+    # separees pour un fichier de soixante-dix lignes ne s'ouvrent jamais.
+    groups:
+      actions:
+        patterns: ["*"]
+    commit-message:
+      prefix: "actions"
