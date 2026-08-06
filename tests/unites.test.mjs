@@ -1557,6 +1557,16 @@ describe("l'effectif d'une équipe", () => {
     assert.deepEqual(g[0].membres.map((m) => m.person.fullName), ["A", "C", "B"]);
   });
 
+  test("aucun sigle affiché n'est laissé sans explication", () => {
+    // Le site s'appelle « apprendre le baseball » : un « MOY .310 » qu'on ne
+    // peut pas elucider sur place ne vaut pas mieux qu'une case vide.
+    const glose = new Map(A.GLOSSAIRE_FICHE);
+    for (const sigle of ["MOY", "CC", "PP", "BV", "ERA", "K", "sauv."])
+      assert.ok(glose.has(sigle), `sigle ${sigle} affiché sans glossaire`);
+    for (const [sigle, texte] of glose)
+      assert.ok(texte.length > 60, `l'explication de ${sigle} est trop courte pour apprendre quoi que ce soit`);
+  });
+
   test("chaque poste affiché a une traduction", () => {
     for (const p of ["P", "C", "1B", "2B", "3B", "SS", "LF", "CF", "RF", "DH", "TWP"])
       assert.ok(A.POSTE_FR[p], `poste ${p} sans libellé français`);

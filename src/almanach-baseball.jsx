@@ -4148,6 +4148,21 @@ const GROUPES_POSTE = [
   ["Autres", "Les autres"],
 ];
 
+/* Les sigles d'une fiche de joueur sont opaques pour qui apprend : « MOY .310 »
+   ne dit rien tant qu'on ignore ce qu'on divise par quoi. Chacun est donc
+   explicable au CLIC, pas au survol — la moitie des visites se font au doigt,
+   et une infobulle n'y existe pas. L'ordre suit celui des fiches. */
+const GLOSSAIRE_FICHE = [
+  ["MOY", "Moyenne au bâton : coups sûrs divisés par présences officielles. .250 est ordinaire, .300 fait un très bon frappeur — et personne n'a tenu .400 sur une saison depuis 1941."],
+  ["CC", "Coups de circuit : la balle quitte le terrain en jeu, le frappeur fait le tour des quatre buts sans être inquiété. Une quarantaine en une saison range un joueur parmi les cogneurs."],
+  ["PP", "Points produits : les points marqués grâce à son passage au bâton, lui compris quand il claque un circuit. C'est ce qui mesure un frappeur en situation, pas seulement en moyenne."],
+  ["BV", "Buts volés : bases gagnées en courant pendant le lancer, sans que la balle soit frappée. Une quarantaine dans la saison désigne un vrai coureur."],
+  ["ERA", "Points mérités accordés toutes les neuf manches — la note d'un lanceur, et la seule qu'on retient de lui. Moyenne de ligue autour de 4,10 : sous 3,20 c'est excellent, au-dessus de 5,00 c'est rude."],
+  ["K", "Retraits sur trois prises : le frappeur repart sans avoir mis la balle en jeu. C'est l'arme d'un lanceur — et la lettre que le carnet de marque note en grand, à l'envers quand la troisième prise est prise sans élan."],
+  ["sauv.", "Sauvetages : matchs terminés par un releveur en préservant une avance courte. Un fermeur se juge presque uniquement là-dessus."],
+  ["3-1", "Le bilan d'un lanceur : victoires puis défaites. Il dépend autant de l'attaque derrière lui que de sa valeur propre — c'est la statistique la plus discutée du baseball."],
+];
+
 /* Le statut arrive en anglais et en jargon de transaction. On traduit ce
    qui se rencontre vraiment, et on laisse passer le reste tel quel plutot
    que d'afficher un vide : mieux vaut un terme anglais qu'aucune mention
@@ -4392,6 +4407,35 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
         </div>
       )}
 
+      {/* La legende precede les fiches au lieu de les suivre : on ne lit pas un
+          tableau de chiffres pour aller ensuite chercher, en bas de page, ce
+          qu'ils valent. Elle est posee des le chargement — c'est une cle de
+          lecture, pas une donnee, et elle evite que tout saute a l'arrivee du
+          reseau. Le conteneur est en flex-wrap parce que l'explication d'une
+          glose sort en pleine largeur et doit pouvoir passer a la ligne. */}
+      {(phase === "ok" || phase === "load") && (
+        <div
+          style={{
+            display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+            margin: "0 0 20px",
+          }}
+        >
+          <span
+            style={{
+              fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".16em",
+              color: T.dim, marginRight: 2,
+            }}
+          >
+            LIRE LES CHIFFRES
+          </span>
+          {GLOSSAIRE_FICHE.map(([sigle, texte]) => (
+            <Etiquette key={sigle} titre={texte}>
+              {sigle}
+            </Etiquette>
+          ))}
+        </div>
+      )}
+
       {phase === "load" && (
         <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
           Lecture de la feuille d'effectif…
@@ -4422,10 +4466,11 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
 
       {phase === "ok" && (
         <>
-          <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, margin: "0 0 14px" }}>
+          <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, margin: "0 0 10px" }}>
             {roster.length} joueur{roster.length > 1 ? "s" : ""}
             {complet && dispo < roster.length ? ` · ${dispo} disponibles` : ""}
           </p>
+
 
           {groupes.map((g) => (
             <section key={g.type} style={{ marginBottom: 26 }}>
@@ -4455,11 +4500,9 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
           ))}
 
           <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, lineHeight: 1.7 }}>
-            <strong>MOY</strong> : moyenne au bâton — coups sûrs par présence officielle.{" "}
-            <strong>CC</strong> : circuits. <strong>PP</strong> : points produits.{" "}
-            <strong>BV</strong> : buts volés. <strong>ERA</strong> : points mérités accordés toutes
-            les neuf manches, la note d'un lanceur — moyenne de ligue autour de 4,10.{" "}
-            <strong>K</strong> : retraits sur prises.
+            Les postes sont ceux du carnet de marque, dans l'ordre de leur numéro : 1 lanceur,
+            2 receveur, 3 premier but, 4 deuxième but, 5 troisième but, 6 arrêt-court,
+            7 champ gauche, 8 champ centre, 9 champ droit.
           </p>
         </>
       )}
@@ -5208,7 +5251,7 @@ export {
   VueDirect, BasesOccupees, Compteurs, TableauManches, CHAMPS_DIRECT, CADENCE_DIRECT, classerMatch,
   // vue « les equipes »
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
-  GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF,
+  GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, GLOSSAIRE_FICHE,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »

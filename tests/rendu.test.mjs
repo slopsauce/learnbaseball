@@ -152,6 +152,15 @@ describe("rendu de la vue Équipes", () => {
     assert.match(html, /Dodger Stadium/, "le parc doit renvoyer vers les terrains");
   });
 
+  test("les sigles sont explicables au clic, pas seulement au survol", () => {
+    // Une infobulle n'existe pas au doigt : chaque sigle doit être un bouton.
+    const html = rendre(React.createElement(VueEquipes, { teams: [equipe], suivies: [119] }));
+    assert.match(html, /LIRE LES CHIFFRES/);
+    for (const sigle of ["MOY", "CC", "PP", "ERA"])
+      assert.match(html, new RegExp(`<button[^>]*>${sigle}</button>`),
+        `le sigle ${sigle} doit être cliquable`);
+  });
+
   test("le menu déroulant sépare les équipes suivies", () => {
     const html = rendre(React.createElement(ChoixEquipe, {
       id: "x", libelle: "L'ÉQUIPE", teams: [equipe], suivies: [119], valeur: 119, onChange: () => {},
