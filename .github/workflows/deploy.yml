@@ -2,22 +2,38 @@ name: deploy
 
 on:
   push: { branches: [main] }
+  # Sans ce declencheur, une demande de fusion n'etait validee par rien : lint,
+  # tests et build ne tournaient qu'APRES la fusion, donc au moment meme ou ils
+  # deployaient. Les demandes de Dependabot arrivaient ainsi sans un seul
+  # controle — precisement celles qu'on veut voir vertes avant de fusionner.
+  pull_request: { branches: [main] }
   workflow_dispatch:
   # Surveillance quotidienne du contrat avec l'API de MLB : elle n'est ni
   # documentee ni garantie, et peut changer sans qu'on pousse quoi que ce soit.
-  # 06h00 UTC, soit 08h00 a Paris en ete. GitHub peut retarder l'execution en
-  # periode de charge, et desactive les taches planifiees apres 60 jours sans
-  # activite sur le depot.
+  #
+  # 06h37 UTC et non 06h00 : GitHub met les taches planifiees en file d'attente
+  # et l'heure ronde est le creneau le plus dispute. Mesure sur cinq jours a
+  # « 0 6 », le declenchement reel arrivait entre 08h21 et 09h46 UTC, soit deux
+  # a quatre heures de retard. Une minute decalee sort du pic.
+  #
+  # GitHub desactive par ailleurs les taches planifiees apres 60 jours sans
+  # activite sur le depot, et sans le dire.
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "37 6 * * *"
 
 permissions: { contents: read, pages: write, id-token: write }
-concurrency: { group: pages, cancel-in-progress: true }
+# Groupe par reference et non global : sans le suffixe, le passage d'une
+# demande de fusion entrait dans la meme file que « pages » et annulait, via
+# `cancel-in-progress`, un deploiement de `main` en cours.
+# Les guillemets ne sont pas decoratifs : les accolades de « ${{ }} » ferment
+# la table YAML en ligne et rendent tout le fichier invalide sans eux.
+concurrency: { group: "pages-${{ github.ref }}", cancel-in-progress: true }
 
 jobs:
   build:
     # Inutile de reconstruire lors du passage planifie : seul le contrat
-    # d'API nous interesse alors.
+    # d'API nous interesse alors. Partout ailleurs — push comme demande de
+    # fusion — on veut lint, tests et build.
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
@@ -36,12 +52,24 @@ jobs:
       - run: npm test
 
       - run: npm run build
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
+
+      # Preparer l'artefact Pages n'a de sens que si un deploiement suit. Sur
+      # une demande de fusion il ne sert a rien, et il echouerait : GitHub
+      # rabat le jeton des demandes de Dependabot en lecture seule, `pages:
+      # write` comprise. Ce sont donc ces deux etapes qui feraient rougir la
+      # demande qu'on cherche justement a valider.
+      - if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
         with: { path: dist }
 
   deploy:
-    if: github.event_name != 'schedule'
+    # Liste blanche, et non « tout sauf schedule » : sous cette forme, ajouter
+    # le declencheur `pull_request` aurait suffi a mettre en ligne le contenu
+    # d'une demande de fusion. Nommer ce qui deploie evite que le prochain
+    # declencheur ajoute le fasse par defaut.
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: build
     runs-on: ubuntu-latest
     environment:
