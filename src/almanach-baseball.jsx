@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { CONCEPTS, BY_ID } from "./donnees/notions.js";
 import { CONTOUR_US, CARTE_L, CARTE_H, projeter } from "./donnees/carte.js";
 import { WIKI_STADES, AFFICHES } from "./donnees/stades.js";
+import { traduireAction } from "./donnees/traduction.js";
 
 /* ------------------------------------------------------------------ *
  *  L'ALMANACH
@@ -14,13 +15,30 @@ import { WIKI_STADES, AFFICHES } from "./donnees/stades.js";
  *  Source : statsapi.mlb.com (sans cle, CORS ouvert).
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ *  LA PALETTE
+ *  Le fond n'est pas uni : c'est un gazon tondu en bandes alternees,
+ *  #123D2A et #16472F. Tout contraste doit donc etre calcule contre la
+ *  bande CLAIRE, la moins favorable — un texte mesure sur la bande
+ *  sombre passe le seuil sur la moitie de l'ecran seulement.
+ *
+ *  Deux valeurs ont ete relevees a ce titre :
+ *   - `dim` portait 4,12:1 sur la bande claire, sous les 4,5 exiges par
+ *     WCAG AA pour du petit texte — et il habille l'essentiel des
+ *     mentions en 9 a 11 px. Il monte a 4,88.
+ *   - `clay` plafonne a 2,54:1 : correct pour un trait ou un aplat (le
+ *     seuil des elements d'interface est de 3), intenable pour du texte.
+ *     Il reste donc la couleur des BORDURES et des FONDS, et `clayLit`
+ *     prend le texte, a 4,27.
+ * ------------------------------------------------------------------ */
 const T = {
   turf: "#123D2A",
   turfLit: "#16472F",
   night: "#0B241A",
   chalk: "#EFF3EA",
-  dim: "#93A697",
+  dim: "#A3B4A6",
   clay: "#C2603A",
+  clayLit: "#E58F63",
   sodium: "#F2CE6B",
 };
 
@@ -490,6 +508,10 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
   const [phase, setPhase] = useState("load"); // load | ok | vide | erreur
   const [erreur, setErreur] = useState("");
   const [justInked, setJustInked] = useState(null);
+  // Le score du match depouille : masque tant qu'on ne le demande pas, et
+  // remasque des qu'on change d'equipe — un nouveau match, une nouvelle
+  // question. Voir le commentaire a l'affichage.
+  const [scoreVu, setScoreVu] = useState(false);
   const [ouvertCarnet, setOuvertCarnet] = useState(false);
   const [consulte, setConsulte] = useState(null); // conceptId ouvert depuis le carnet
   const [mode, setMode] = useState("decouvrir"); // decouvrir | reviser
@@ -502,6 +524,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
   const charger = useCallback(async (tid) => {
     setPhase("load");
     setErreur("");
+    setScoreVu(false);
     try {
       const sch = await jsonMlb(
         `${API}/schedule?sportId=1&teamId=${tid}` +
@@ -707,7 +730,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
               borderRadius: 3, padding: 20, fontSize: 16, lineHeight: 1.5,
             }}
           >
-            {question.action.description}
+            <Action texte={question.action.description} />
           </div>
 
           <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.sodium, margin: "16px 0 10px", letterSpacing: ".1em" }}>
@@ -755,7 +778,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
                   <div
                     style={{
                       fontFamily: FF_MONO, fontWeight: 700, fontSize: 22,
-                      color: T.clay, letterSpacing: ".04em",
+                      color: T.clayLit, letterSpacing: ".04em",
                     }}
                   >
                     {question.bon.code}
@@ -798,13 +821,33 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
             }}
           >
             {ancre ? (
+              /* Le score est masque par defaut, comme partout ailleurs. Le
+                 carnet depouille la feuille du DERNIER match joue : pour qui
+                 suit une equipe depuis la France et regarde le replay le
+                 lendemain, l'ouvrir revenait a se faire annoncer le resultat
+                 par l'outil cense le lui apprendre. Le programme et le direct
+                 posaient deja la question ; celui-ci y repond enfin pareil. */
               <span style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <Img src={CAP(game.teams.away.team.id)} alt="" size={22} />
-                <span>{game.teams.away.team.name} {game.teams.away.score}</span>
-                <span style={{ opacity: .5 }}>—</span>
-                <span>{game.teams.home.score} {game.teams.home.team.name}</span>
+                <span>{game.teams.away.team.abbreviation || game.teams.away.team.name}</span>
+                {scoreVu ? (
+                  <span style={{ color: T.chalk }}>
+                    {game.teams.away.score} — {game.teams.home.score}
+                  </span>
+                ) : (
+                  <button
+                    onClick={() => setScoreVu(true)}
+                    style={{
+                      all: "unset", cursor: "pointer", color: T.clayLit,
+                      borderBottom: "1px solid currentColor", fontSize: 10,
+                    }}
+                  >
+                    score masqué — afficher
+                  </button>
+                )}
+                <span>{game.teams.home.team.abbreviation || game.teams.home.team.name}</span>
                 <Img src={CAP(game.teams.home.team.id)} alt="" size={22} />
-                <span style={{ color: "rgba(147,166,151,.55)" }}>
+                <span style={{ color: T.dim }}>
                   · {dateFR(game.gameDate)}{game.venue?.name ? ` · ${game.venue.name}` : ""}
                 </span>
               </span>
@@ -833,13 +876,13 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
                 <div
                   style={{
                     fontFamily: FF_MONO, fontWeight: 700, fontSize: 30,
-                    color: T.clay, margin: "2px 0 8px", letterSpacing: ".04em",
+                    color: T.clayLit, margin: "2px 0 8px", letterSpacing: ".04em",
                   }}
                 >
                   {concept.code}
                 </div>
                 <p style={{ margin: 0, fontSize: 14.5, lineHeight: 1.5, color: "rgba(239,243,234,.9)" }}>
-                  {courant.description}
+                  <Action texte={courant.description} />
                 </p>
                 {courant.frappeur && (
                   <div
@@ -858,7 +901,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
                         </span>
                       </span>
                     </span>
-                    <span style={{ color: T.clay, fontSize: 13 }}>×</span>
+                    <span style={{ color: T.clayLit, fontSize: 13 }}>×</span>
                     <span style={{ display: "flex", alignItems: "center", gap: 7 }}>
                       <Img src={PORTRAIT(courant.idLanceur)} alt="" size={38} rond
                            style={{ background: "rgba(239,243,234,.09)" }} />
@@ -882,7 +925,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
               <div
                 style={{
                   fontFamily: FF_MONO, fontWeight: 700, fontSize: 28,
-                  color: T.clay, letterSpacing: ".04em",
+                  color: T.clayLit, letterSpacing: ".04em",
                 }}
               >
                 {concept.code}
@@ -1382,6 +1425,47 @@ function Glose({ texte, children, style }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ *  L'ACTION, EN FRANCAIS
+ *  Le play-by-play arrive dans la langue du marqueur officiel. C'est la
+ *  matiere premiere du carnet, du quiz et du direct — la premiere chose
+ *  que lit quelqu'un venu apprendre le baseball EN FRANCAIS. La laisser
+ *  en anglais revenait a lui demander de comprendre avant d'apprendre.
+ *
+ *  L'original reste accessible d'un clic, et pas seulement par scrupule
+ *  de fidelite : le vocabulaire anglais est celui des retransmissions et
+ *  des statistiques, donc quelque chose a apprendre aussi. Quand la
+ *  traduction echoue — une tournure rare sur cinquante — on affiche
+ *  l'anglais sans le signaler : rien a proposer de mieux.
+ * ------------------------------------------------------------------ */
+function Action({ texte, style }) {
+  const [vo, setVo] = useState(false);
+  const { fr, complet } = useMemo(() => traduireAction(texte), [texte]);
+  if (!texte) return null;
+  return (
+    <span style={style}>
+      {vo ? texte : fr}
+      {complet && (
+        <>
+          {" "}
+          <button
+            onClick={() => setVo(!vo)}
+            aria-pressed={vo}
+            title={vo ? fr : texte}
+            style={{
+              all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 9,
+              letterSpacing: ".08em", color: T.dim, verticalAlign: "1px",
+              borderBottom: `1px solid ${T.dim}`,
+            }}
+          >
+            {vo ? "FR" : "VO"}
+          </button>
+        </>
+      )}
+    </span>
+  );
+}
+
 /* Petite etiquette narrative, explicable au clic. */
 function Etiquette({ children, titre, fort = false }) {
   return (
@@ -1577,7 +1661,7 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
       {m.idLanceurExt && m.idLanceurDom && (
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 11 }}>
           <Lanceur id={m.idLanceurExt} nom={m.lanceurExt} st={lanceurs[m.idLanceurExt]} />
-          <span style={{ color: T.clay, fontSize: 12, alignSelf: "center" }}>×</span>
+          <span style={{ color: T.clayLit, fontSize: 12, alignSelf: "center" }}>×</span>
           <Lanceur id={m.idLanceurDom} nom={m.lanceurDom} st={lanceurs[m.idLanceurDom]} />
         </div>
       )}
@@ -1701,8 +1785,19 @@ function compteARebours(debut, maintenant = Date.now()) {
   if (min < 60) return `dans ${min} min`;
   const h = Math.floor(min / 60);
   if (h < 24) return `dans ${h} h${min % 60 ? ` ${String(min % 60).padStart(2, "0")}` : ""}`;
-  const j = Math.round(h / 24);
-  return j <= 1 ? "demain" : `dans ${j} jours`;
+  /* Au-dela de la journee, on compte en NUITS et non en tranches de 24 h.
+     Un match a 03h40 du matin tombe a une quarantaine d'heures : l'ancien
+     calcul l'annoncait « dans 2 jours » alors que la frise, juste dessous,
+     le rangeait dans « ce soir ». Deux affirmations contradictoires sur le
+     meme match, a trois centimetres l'une de l'autre.
+     Toute l'application raisonne en nuits parisiennes — une nuit court de
+     17h a 07h — et ce compteur est le dernier endroit qui l'ignorait. */
+  const nuitIci = nuitDe(new Date(maintenant).toISOString()).jour;
+  const nuitLa = nuitDe(new Date(debut).toISOString()).jour;
+  const nuits = Math.round((new Date(nuitLa) - new Date(nuitIci)) / 864e5);
+  if (nuits <= 0) return "cette nuit";
+  if (nuits === 1) return "demain soir";
+  return `dans ${nuits} nuits`;
 }
 
 /* ---------------------------------------------------------------- *
@@ -2021,7 +2116,7 @@ function BandeauSituation({ situation, spoilers, onAfficher }) {
         <span style={{ color: T.sodium, letterSpacing: ".18em" }}>LA SITUATION</span>
         {" — masquée : bilans, séries et nombre magique révèlent la nuit dernière."}
         <br />
-        <span style={{ color: T.clay, borderBottom: "1px solid currentColor" }}>
+        <span style={{ color: T.clayLit, borderBottom: "1px solid currentColor" }}>
           afficher quand même
         </span>
       </button>
@@ -2181,18 +2276,34 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const [choisi, setChoisi] = useState(null); // gamePk ouvert au clic
   const [suspense, setSuspense] = useState({}); // gamePk -> indice brut
   const [jauge, setJauge] = useState({ etat: "repos", fait: 0, total: 0 });
-  const pisteRef = useRef(null);
+  /* MESURE DE LA PISTE — par ref de rappel, et non depuis un effet de montage.
+     La piste n'existe qu'une fois l'horaire arrive : au montage, la vue est
+     encore en « chargement » et `pisteRef.current` vaut null. L'effet
+     s'arretait donc sur son garde-fou, ne se rejouait jamais (dependances
+     vides), et `pisteW` restait a sa valeur de repli pour toute la session.
+     Consequence mesurable sur un telephone de 390 px : la piste fait 310 px,
+     le calcul en supposait 640, et les pastilles sortaient a 27 x 18 px — la
+     moitie de ce qui etait prevu, avec les abreviations tronquees et une
+     cible tactile deux fois trop petite. L'agrandissement « ecran etroit »
+     juste en dessous ne s'est, lui, jamais declenche.
+     Une ref de rappel est appelee par React au moment ou le noeud entre dans
+     le document, quel que soit le rendu : elle ne peut pas manquer l'arrivee
+     de la piste. */
+  const observateur = useRef(null);
   const [pisteW, setPisteW] = useState(640);
-  useEffect(() => {
-    const el = pisteRef.current;
+  const pisteRef = useCallback((el) => {
+    observateur.current?.disconnect();
+    observateur.current = null;
     if (!el || typeof ResizeObserver === "undefined") return;
+    // Premiere mesure immediate : sur les navigateurs qui ne livrent la
+    // premiere entree qu'au cadre suivant, on evite un rendu a 640.
+    const l = el.getBoundingClientRect().width;
+    if (l) setPisteW(l);
     const ro = new ResizeObserver(([e]) => setPisteW(e.contentRect.width || 640));
     ro.observe(el);
-    return () => ro.disconnect();
-    // Sans tableau de dependances, l'observateur etait reconstruit et
-    // redetache a CHAQUE rendu de la vue. La piste est montee une fois pour
-    // toutes : on ne s'abonne donc qu'au montage.
+    observateur.current = ro;
   }, []);
+  useEffect(() => () => observateur.current?.disconnect(), []);
   const largeur = Math.min(0.35, Math.max(0.05, PASTILLE_PX / pisteW));
   // Une ligne d'appoint (score ou note) fait grandir les pastilles.
 
@@ -2400,6 +2511,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const base = etroit ? VOIE_PX + 8 : VOIE_PX;
   const hauteurVoie = ligneAppoint ? base + 12 : base;
 
+
   /* Les recommandations, elles, restent centrees sur tes equipes : la frise
      te montre la nuit entiere, mais on ne te propose pas d'aller regarder
      une affiche que tu n'as pas choisi de suivre. */
@@ -2507,6 +2619,19 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     const auj = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
     return h < AUBE ? decalerJour(auj, -1) : auj;
   }, []);
+
+  /* Une fois les pastilles a leur vraie taille, quatorze nuits font sept
+     metres de page sur un telephone — on cherchait ce soir, on defile cinq
+     minutes. La quinzaine reste entiere sur grand ecran, ou elle se survole
+     d'un coup d'oeil ; ailleurs elle s'ouvre a la demande, et la nuit en
+     cours est toujours dans le lot montre. */
+  const [frisePliee, setFriseePliee] = useState(true);
+  const NUITS_REPLIEES = 5;
+  const nuitsVues = useMemo(() => {
+    if (!etroit || !frisePliee) return nuits;
+    const i = Math.max(0, nuits.indexOf(nuitCourante));
+    return nuits.slice(i, i + NUITS_REPLIEES);
+  }, [nuits, etroit, frisePliee, nuitCourante]);
 
   /* Interroge winProbability pour les matchs termines actuellement affiches.
      Le filtre `fields` fait tomber la reponse de 1,1 Mo a 9,5 Ko par match ;
@@ -2631,7 +2756,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           aria-expanded={ouvertEquipes}
           style={{
             all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 10,
-            color: T.clay, borderBottom: "1px solid currentColor", marginLeft: 4,
+            color: T.clayLit, borderBottom: "1px solid currentColor", marginLeft: 4,
           }}
         >
           {ouvertEquipes ? "fermer" : "modifier"}
@@ -2680,7 +2805,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
               className="alm-btn"
               onClick={() => setSuivies([])}
               style={{
-                all: "unset", cursor: "pointer", color: T.clay,
+                all: "unset", cursor: "pointer", color: T.clayLit,
                 borderBottom: "1px solid currentColor",
               }}
             >
@@ -2776,7 +2901,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
               {matchDuJour.idLanceurExt && matchDuJour.idLanceurDom && (
                 <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 11 }}>
                   <Lanceur id={matchDuJour.idLanceurExt} nom={matchDuJour.lanceurExt} st={lanceurs[matchDuJour.idLanceurExt]} />
-                  <span style={{ color: T.clay, fontSize: 12, alignSelf: "center" }}>×</span>
+                  <span style={{ color: T.clayLit, fontSize: 12, alignSelf: "center" }}>×</span>
                   <Lanceur id={matchDuJour.idLanceurDom} nom={matchDuJour.lanceurDom} st={lanceurs[matchDuJour.idLanceurDom]} />
                 </div>
               )}
@@ -2880,7 +3005,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                             }}
                           >
                             <Lanceur id={m.idLanceurExt} nom={m.lanceurExt} st={lanceurs[m.idLanceurExt]} />
-                            <span style={{ color: T.clay, fontSize: 12 }}>×</span>
+                            <span style={{ color: T.clayLit, fontSize: 12 }}>×</span>
                             <Lanceur id={m.idLanceurDom} nom={m.lanceurDom} st={lanceurs[m.idLanceurDom]} />
                           </div>
                         )}
@@ -2922,7 +3047,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           </div>
 
           {/* --- les nuits --- */}
-          {nuits.map((n) => {
+          {nuitsVues.map((n) => {
             const liste = parNuit.get(n) || [];
             const voies = liste.length ? Math.max(...liste.map((m) => m.voie)) + 1 : 1;
             const l = libelleNuit(n);
@@ -3015,6 +3140,20 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             );
           })}
 
+          {etroit && nuitsVues.length < nuits.length && (
+            <button
+              className="alm-btn"
+              onClick={() => setFriseePliee(false)}
+              style={{
+                all: "unset", cursor: "pointer", display: "block", marginTop: 10,
+                fontFamily: FF_MONO, fontSize: 10.5, color: T.clayLit,
+                borderBottom: "1px solid currentColor",
+              }}
+            >
+              voir les {nuits.length - nuitsVues.length} nuits suivantes
+            </button>
+          )}
+
           <p
             style={{
               fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 16, lineHeight: 1.7,
@@ -3025,7 +3164,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             {miens > 0 ? (
               <>
                 {" "}
-                <span style={{ color: T.clay }}>{miens} concernent tes équipes</span>, en terre battue.
+                <span style={{ color: T.clayLit }}>{miens} concernent tes équipes</span>, en terre battue.
               </>
             ) : null}
             <br />
@@ -3231,14 +3370,25 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
 
   const actifs = useMemo(() => new Set(ceSoir.map((g) => g.idStade)), [ceSoir]);
 
-  const points = useMemo(
-    () =>
-      Object.entries(stades)
-        .filter(([id]) => parVenue[id])
-        .map(([id, s]) => ({ id: Number(id), s, eq: parVenue[id], p: projeter(s.lon, s.lat) }))
-        .filter((x) => x.p),
-    [stades, parVenue]
-  );
+  const points = useMemo(() => {
+    const l = Object.entries(stades)
+      .filter(([id]) => parVenue[id])
+      .map(([id, s]) => ({ id: Number(id), s, eq: parVenue[id], p: projeter(s.lon, s.lat) }))
+      .filter((x) => x.p)
+      // Ordre stable et independant de celui de l'API : la carte ne doit pas
+      // changer de disposition d'un chargement a l'autre.
+      .sort((a, b) => a.id - b.id);
+    /* Etiquettes en collision : quatre villes de la ligue en abritent deux
+       (Los Angeles, New York, Chicago, et Baltimore a portee de Washington).
+       Leurs abreviations se chevauchaient au point d'etre illisibles. La
+       seconde de chaque paire va SOUS son point. */
+    return l.map((x, i) => ({
+      ...x,
+      dessous: l.some(
+        (y, j) => j < i && Math.abs(y.p.x - x.p.x) < 26 && Math.abs(y.p.y - x.p.y) < 15
+      ),
+    }));
+  }, [stades, parVenue]);
 
   /* Un deplacement par match : du parc habituel du visiteur vers le parc du soir. */
   const trajets = useMemo(
@@ -3264,10 +3414,14 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
         chaque équipe visiteuse à sa destination. Touche un point pour le détail du terrain.
       </p>
 
+      {/* `role="img"` fermait la carte : il annonce un dessin unique, et tout
+          ce qu'elle contient — trente parcs cliquables — disparaissait pour
+          les technologies d'assistance. En « group », les points restent des
+          commandes a part entiere. */}
       <svg
         viewBox={`-20 -20 ${CARTE_L + 40} ${CARTE_H + 40}`}
         style={{ width: "100%", display: "block", marginBottom: 14 }}
-        role="img"
+        role="group"
         aria-label="Carte des trente parcs de la Ligue majeure de baseball"
       >
         <path d={CONTOUR_US} fill="rgba(239,243,234,.04)" stroke="rgba(147,166,151,.4)" strokeWidth="2" />
@@ -3283,24 +3437,47 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
           />
         ))}
 
-        {points.map(({ id, eq, p }) => {
+        {points.map(({ id, eq, p, dessous }) => {
           const actif = actifs.has(id);
           const suivi = eq.some((t) => suivies.includes(t.id));
           const sel = choisi === id;
+          const nom = eq.map((t) => t.name).join(" et ");
+          const basculer = () => setChoisi(sel ? null : id);
           return (
-            <g key={id} onClick={() => setChoisi(sel ? null : id)} style={{ cursor: "pointer" }}>
+            /* Un `<g onClick>` n'est ni tabulable ni actionnable au clavier :
+               la carte entiere — le contenu principal de cet onglet — etait
+               reservee a la souris et au doigt. Une tabulation sur la page
+               n'offrait que les cinq onglets. */
+            <g
+              key={id}
+              role="button"
+              tabIndex={0}
+              aria-pressed={sel}
+              aria-label={`${nom} — ${actif ? "reçoit cette nuit" : "pas de match cette nuit"}`}
+              onClick={basculer}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+                  e.preventDefault();
+                  basculer();
+                }
+              }}
+              style={{ cursor: "pointer" }}
+            >
               <circle cx={p.x} cy={p.y} r="20" fill="transparent" />
               <circle
                 cx={p.x} cy={p.y} r={actif ? 9 : 6}
-                fill={actif ? T.sodium : suivi ? T.clay : "rgba(147,166,151,.55)"}
+                fill={actif ? T.sodium : suivi ? T.clay : "rgba(163,180,166,.65)"}
                 stroke={sel ? T.chalk : "rgba(18,36,27,.85)"}
                 strokeWidth={sel ? 3 : 1.5}
               />
               <text
-                x={p.x} y={p.y - (actif ? 15 : 12)} textAnchor="middle"
+                /* Deux parcs voisins — Los Angeles, New York, Chicago,
+                   Baltimore-Washington — superposaient leurs etiquettes en une
+                   bouillie illisible. Le second passe dessous. */
+                x={p.x} y={p.y + (dessous ? (actif ? 24 : 21) : -(actif ? 15 : 12))} textAnchor="middle"
                 style={{
                   fontFamily: FF_MONO, fontSize: 15, fontWeight: 700,
-                  fill: actif ? T.sodium : "rgba(239,243,234,.7)", pointerEvents: "none",
+                  fill: actif ? T.sodium : "rgba(239,243,234,.82)", pointerEvents: "none",
                 }}
               >
                 {eq.map((t) => t.abbreviation).join("/")}
@@ -3357,13 +3534,10 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
                   const d = distancesCloture(ouvert.s);
                   if (!d) return null;
                   return (
-                    <span
-                      title="Gauche · centre · droite. Le baseball compte en pieds (ft) : c'est le chiffre peint sur les murs des stades."
-                      style={{ cursor: "help" }}
-                    >
+                    <Glose texte="Gauche · centre · droite. Le baseball compte en pieds (ft) : c'est le chiffre peint sur les murs des stades.">
                       {d.m}
                       <span style={{ color: T.dim }}> · {d.pi}</span>
-                    </span>
+                    </Glose>
                   );
                 })()}
               />
@@ -3697,6 +3871,8 @@ function TableauManches({ innings, teams, ab }) {
 
 function VueDirect({ teams, suivies = [] }) {
   const [enCours, setEnCours] = useState([]);
+  // Le prochain coup d'envoi, pour que l'ecran vide dise quand revenir.
+  const [prochain, setProchain] = useState(null);
   const [choisi, setChoisi] = useState(null);
   const [etat, setEtat] = useState(null);
   const [proba, setProba] = useState(null);
@@ -3763,6 +3939,23 @@ function VueDirect({ teams, suivies = [] }) {
               a.fini !== b.fini ? (a.fini ? 1 : -1) : new Date(b.debut) - new Date(a.debut)
             );
           setEnCours(l);
+          /* Le prochain coup d'envoi se lit dans la meme reponse : les matchs
+             a venir y figurent, ecartes plus haut parce qu'ils ne sont ni en
+             cours ni termines. Aucune requete de plus. */
+          const maintenant = Date.now();
+          const suivant = (d.dates || [])
+            .flatMap((x) => x.games || [])
+            .filter((g) => !classerMatch(g.status).reporte && new Date(g.gameDate) > maintenant)
+            .sort((a, b) => new Date(a.gameDate) - new Date(b.gameDate))[0];
+          setProchain(
+            suivant
+              ? {
+                  ext: suivant.teams.away.team.abbreviation,
+                  dom: suivant.teams.home.team.abbreviation,
+                  debut: suivant.gameDate,
+                }
+              : null
+          );
           setPhase("ok");
         })
         .catch(() => !annule && setPhase("erreur"));
@@ -3839,9 +4032,37 @@ function VueDirect({ teams, suivies = [] }) {
       )}
 
       {phase === "ok" && !enCours.length && (
-        <p style={{ fontSize: 16 }}>
-          Aucun match en cours. La ligue joue surtout entre minuit et 6 h, heure de Paris — reviens
-          plus tard, ou consulte le programme pour savoir quand.
+        /* L'ecran vide le plus frequent de l'application : la ligue joue la
+           nuit, on la consulte le jour. Il renvoyait vers « le programme »
+           sans y conduire — un cul-de-sac poli. Il ouvre maintenant l'onglet,
+           et dit quand revenir plutot que « plus tard ». */
+        <p style={{ fontSize: 16, lineHeight: 1.55 }}>
+          Aucun match en cours. La ligue joue surtout entre minuit et 6 h, heure de Paris.
+          {prochain ? (
+            <>
+              {" "}Le prochain coup d'envoi est {compteARebours(prochain.debut)} —{" "}
+              <span style={{ fontFamily: FF_MONO, fontSize: 13 }}>
+                {prochain.ext} @ {prochain.dom}, {nuitDe(prochain.debut).hhmm}
+              </span>
+              .
+            </>
+          ) : null}
+          <br />
+          <button
+            onClick={() => {
+              try {
+                if (typeof window !== "undefined") window.location.hash = "programme";
+              } catch {
+                /* contexte restreint */
+              }
+            }}
+            style={{
+              all: "unset", cursor: "pointer", marginTop: 10, fontFamily: FF_MONO,
+              fontSize: 11, color: T.clayLit, borderBottom: "1px solid currentColor",
+            }}
+          >
+            voir le programme des prochaines nuits
+          </button>
         </p>
       )}
 
@@ -4071,7 +4292,7 @@ function VueDirect({ teams, suivies = [] }) {
                                   color: a.about?.isScoringPlay ? T.chalk : "rgba(239,243,234,.72)",
                                 }}
                               >
-                                {a.result.description}
+                                <Action texte={a.result.description} />
                               </p>
                             </div>
                           );
@@ -4090,7 +4311,7 @@ function VueDirect({ teams, suivies = [] }) {
                       onClick={() => setToutVoir(!toutVoir)}
                       style={{
                         all: "unset", cursor: "pointer", fontFamily: FF_MONO, fontSize: 10.5,
-                        color: T.clay, borderBottom: "1px solid currentColor",
+                        color: T.clayLit, borderBottom: "1px solid currentColor",
                       }}
                     >
                       {toutVoir
@@ -4106,7 +4327,7 @@ function VueDirect({ teams, suivies = [] }) {
               onClick={() => setSpoilers(true)}
               style={{
                 all: "unset", cursor: "pointer", marginTop: 14, fontFamily: FF_MONO,
-                fontSize: 10.5, color: T.clay, borderBottom: "1px solid currentColor",
+                fontSize: 10.5, color: T.clayLit, borderBottom: "1px solid currentColor",
               }}
             >
               afficher le score, le détail par manche et le déroulé
@@ -4306,25 +4527,28 @@ function FicheJoueur({ m, teamId }) {
         {/* Un joueur des deux casquettes porte les DEUX lignes : n'en montrer
             qu'une sous un titre qui promet l'inverse serait la pire des
             reponses. Pour tous les autres, une seule des deux existe. */}
+        {/* Une glose, et non un `title` : le survol n'existe pas au doigt, et
+            c'est justement sur ces chiffres qu'on a besoin d'aide. */}
         {ligneLance && (
-          <div
-            title={`ERA ${lance.era} — points mérités accordés toutes les neuf manches. Bilan ${lance.wins}-${lance.losses}, ${lance.strikeOuts} retraits sur prises en ${lance.inningsPitched} manches.`}
-            style={{
-              fontFamily: FF_MONO, fontSize: 10, marginTop: 3,
-              color: couleurEra(lance.era), cursor: "help",
-            }}
-          >
-            ERA {lance.era} · {lance.wins}-{lance.losses}
-            {lance.saves ? ` · ${lance.saves} sauv.` : ""} · {lance.strikeOuts} K
+          <div style={{ display: "flex", flexWrap: "wrap", marginTop: 3 }}>
+            <Glose
+              texte={`ERA ${lance.era} : points mérités accordés toutes les neuf manches. Bilan ${lance.wins}-${lance.losses}, ${lance.strikeOuts} retraits sur prises en ${lance.inningsPitched} manches.`}
+              style={{ fontFamily: FF_MONO, fontSize: 10, color: couleurEra(lance.era) }}
+            >
+              ERA {lance.era} · {lance.wins}-{lance.losses}
+              {lance.saves ? ` · ${lance.saves} sauv.` : ""} · {lance.strikeOuts} K
+            </Glose>
           </div>
         )}
         {ligneFrappe && (
-          <div
-            title={`Moyenne au bâton ${frappe.avg} sur ${frappe.gamesPlayed} matchs, ${frappe.homeRuns} circuits, ${frappe.rbi} points produits, OPS ${frappe.ops}.`}
-            style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 3, cursor: "help" }}
-          >
-            MOY {frappe.avg} · {frappe.homeRuns} CC · {frappe.rbi} PP
-            {frappe.stolenBases ? ` · ${frappe.stolenBases} BV` : ""}
+          <div style={{ display: "flex", flexWrap: "wrap", marginTop: 3 }}>
+            <Glose
+              texte={`Moyenne au bâton ${frappe.avg} sur ${frappe.gamesPlayed} matchs, ${frappe.homeRuns} circuits, ${frappe.rbi} points produits, OPS ${frappe.ops}.`}
+              style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim }}
+            >
+              MOY {frappe.avg} · {frappe.homeRuns} CC · {frappe.rbi} PP
+              {frappe.stolenBases ? ` · ${frappe.stolenBases} BV` : ""}
+            </Glose>
           </div>
         )}
         {!ligneLance && !ligneFrappe && (
@@ -4334,7 +4558,7 @@ function FicheJoueur({ m, teamId }) {
         )}
 
         {statut && (
-          <div style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.clay, marginTop: 3 }}>
+          <div style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.clayLit, marginTop: 3 }}>
             {statut}
           </div>
         )}
@@ -4600,6 +4824,15 @@ const ALIAS = {
 const FRAGMENT = {
   nuits: "programme", carnet: "carnet", terrains: "terrains",
   equipes: "equipes", direct: "direct",
+};
+
+/* Ce que porte l'onglet du navigateur, et donc l'entree d'historique. */
+const TITRE_ONGLET = {
+  carnet: "Le carnet",
+  nuits: "Le programme",
+  terrains: "Les terrains",
+  equipes: "Les équipes",
+  direct: "Le direct",
 };
 
 /* La consultation passe par hasOwn : sans lui, « #constructor » ou
@@ -4931,7 +5164,7 @@ function Onglet({ id, actif, onChoisir, children }) {
         fontFamily: FF_DISPLAY, fontSize: 22, fontWeight: 700,
         textTransform: "uppercase", letterSpacing: ".04em",
         padding: "8px 0", marginRight: 24,
-        color: actif ? T.chalk : "rgba(147,166,151,.7)",
+        color: actif ? T.chalk : "rgba(196,212,199,.82)",
         borderBottom: `2px solid ${actif ? T.clay : "transparent"}`,
       }}
     >
@@ -4960,6 +5193,14 @@ export default function App() {
     window.addEventListener("hashchange", maj);
     return () => window.removeEventListener("hashchange", maj);
   }, []);
+
+  /* Le titre de la page suivait la vue : cinq entrees d'historique et cinq
+     onglets de navigateur portaient le meme libelle, et un lien partage ne
+     disait pas ou il menait. */
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    document.title = `${TITRE_ONGLET[onglet] || "L'almanach"} — L'almanach du carnet de marque`;
+  }, [onglet]);
 
   const changerOnglet = (id) => {
     setOnglet(id);
@@ -5058,11 +5299,27 @@ export default function App() {
     return () => { annule = true; };
   }, []);
 
-  useEffect(() => {
+  /* La liste des trente franchises alimente TOUS les menus. Son echec etait
+     avale en silence : le repli d'un seul club code en dur prenait le relais,
+     et l'utilisateur se retrouvait enferme sur les Dodgers sans un mot
+     d'explication ni moyen d'en sortir — un ecran qui a l'air de marcher est
+     pire qu'un ecran qui dit qu'il ne marche pas. On retient l'echec pour le
+     dire, avec de quoi reessayer. */
+  const [teamsKo, setTeamsKo] = useState(false);
+  const chargerTeams = useCallback(() => {
+    setTeamsKo(false);
     jsonMlb(`${API}/teams?sportId=1&fields=teams,id,name,abbreviation,venue,division`)
-      .then((d) => setTeams((d.teams || []).sort((a, b) => a.name.localeCompare(b.name))))
-      .catch(() => {});
+      .then((d) => {
+        const l = (d.teams || []).sort((a, b) => a.name.localeCompare(b.name));
+        setTeams(l);
+        setTeamsKo(!l.length);
+      })
+      .catch(() => setTeamsKo(true));
   }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    chargerTeams();
+  }, [chargerTeams]);
 
   // Stade habituel de chaque franchise : sert a reperer les terrains neutres.
   const stadeHabituel = useMemo(
@@ -5137,8 +5394,11 @@ ${POLICES}
        regle s'appliquait bien (le selecteur matche) mais l'outline calcule
        restait « none » : aucun repere visible au clavier, nulle part.
        La regle vise le conteneur plutot qu'une liste de classes, pour couvrir
-       aussi les boutons qui n'en portent aucune. */
-    .alm-page :is(button, select, input, a):focus-visible {
+       aussi les boutons qui n'en portent aucune.
+       « [tabindex] » couvre les points de la carte des terrains : ce sont
+       des <g> SVG, donc ni bouton ni lien, et l'anneau par defaut du
+       navigateur n'y est pas garanti. */
+    .alm-page :is(button, select, input, a, [tabindex]):focus-visible {
       outline: 2px solid ${T.sodium} !important;
       outline-offset: 2px !important;
     }
@@ -5222,6 +5482,31 @@ ${POLICES}
           ))}
         </nav>
 
+        {teamsKo && (
+          <div
+            role="status"
+            style={{
+              border: `1px solid ${T.clay}`, borderRadius: 3, padding: "10px 14px",
+              margin: "0 0 18px", display: "flex", alignItems: "center", gap: 12,
+              flexWrap: "wrap", fontFamily: FF_MONO, fontSize: 11, color: T.chalk,
+            }}
+          >
+            <span>
+              La liste des équipes n'est pas arrivée — les menus restent incomplets.
+            </span>
+            <button
+              className="alm-btn"
+              onClick={chargerTeams}
+              style={{
+                all: "unset", cursor: "pointer", color: T.clayLit,
+                borderBottom: "1px solid currentColor",
+              }}
+            >
+              réessayer
+            </button>
+          </div>
+        )}
+
         {/* `cle` remet la garde a zero au changement d'onglet. */}
         <Garde cle={onglet}>
         {onglet === "direct" ? (
@@ -5267,7 +5552,7 @@ ${POLICES}
         <footer
           style={{
             marginTop: 40, paddingTop: 14, borderTop: "1px solid rgba(239,243,234,.14)",
-            fontFamily: FF_MONO, fontSize: 10, color: "rgba(147,166,151,.7)", lineHeight: 1.7,
+            fontFamily: FF_MONO, fontSize: 10, color: T.dim, lineHeight: 1.7,
           }}
         >
           {appris.length > 0 && (
@@ -5336,5 +5621,5 @@ export {
   notificationsADeclencher, purgerVues, ReglageAvertissements, texteAvertissements,
   PileBandeaux, AVANT_MATCH, PEREMPTION, SANS_SUITE, CADENCE_VEILLE, CADENCE_REPOS,
   // garde-fous transverses
-  Garde, jourParis, jsonMlb, TZ,
+  Garde, jourParis, jsonMlb, TZ, T, traduireAction, Action, TITRE_ONGLET,
 };

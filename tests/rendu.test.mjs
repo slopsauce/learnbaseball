@@ -2,7 +2,8 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, FicheJoueur, ChoixEquipe, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
+import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -445,5 +446,63 @@ describe("bandeaux d'avertissement", () => {
     }));
     assert.doesNotMatch(html, /disabled/, "le bandeau dans la page reste un canal valable");
     assert.match(html, /bandeau dans la page/);
+  });
+});
+
+describe("garde-fous d'accessibilité", () => {
+  test("les points de la carte sont des commandes, pas un dessin", () => {
+    /* Un `<g onClick>` dans un `<svg role="img">` n'est ni tabulable ni
+       annonce : la carte — tout le contenu de cet onglet — n'existait que
+       pour la souris. Mesure a l'appui : zero arret de tabulation. */
+    const html = rendre(React.createElement(VueTerrains, {
+      teams: [equipe], stades, stadeHabituel: { 119: 22 }, suivies: [119],
+    }));
+    assert.doesNotMatch(html, /role="img"/, "role=img referme la carte aux lecteurs d'écran");
+    assert.match(html, /role="button"/);
+    assert.match(html, /tabindex="0"/);
+    assert.match(html, /aria-label="Los Angeles Dodgers/);
+  });
+
+  test("l'anneau de focus couvre aussi les éléments tabulables non-boutons", () => {
+    assert.match(rendre(React.createElement(App)), /\[tabindex\]\):focus-visible/);
+  });
+
+  test("le titre de la page distingue les onglets", () => {
+    // Cinq entrees d'historique portaient le meme libelle.
+    const t = new Set(Object.values(A_TITRES));
+    assert.equal(t.size, 5, "chaque onglet doit avoir son propre titre");
+  });
+});
+
+describe("anti-spoiler du carnet", () => {
+  test("le score du match dépouillé est masqué par défaut", () => {
+    /* Le carnet ouvre sur le DERNIER match joue : l'afficher revenait a
+       annoncer le resultat a qui n'a pas encore vu le replay. Le programme
+       et le direct posaient deja la question. */
+    const html = rendre(React.createElement(VueAlmanach, {
+      teams: [equipe], appris: [], setAppris: () => {}, suivies: [119],
+    }));
+    assert.doesNotMatch(html, /\d+\s*—\s*\d+/, "aucun score ne doit sortir sans qu'on le demande");
+  });
+});
+
+describe("traduction affichée", () => {
+  test("l'action sort en français, avec l'original à un clic", () => {
+    const html = rendre(React.createElement(Action, {
+      texte: "Mookie Betts singles on a line drive to right fielder Juan Soto.",
+    }));
+    assert.match(html, /réussit un simple/);
+    assert.match(html, /<button[^>]*>VO<\/button>/, "l'original doit rester accessible");
+    // L'anglais ne doit pas etre AFFICHE : il ne survit que dans l'attribut
+    // `title` du bouton, ce que le lecteur ne voit pas tant qu'il ne demande rien.
+    const visible = html.replace(/<[^>]+>/g, "");
+    assert.doesNotMatch(visible, /right fielder/);
+  });
+
+  test("une action intraduisible s'affiche telle quelle, sans bouton", () => {
+    const brut = "Manfred Man reverses the polarity of the neutron flow.";
+    const html = rendre(React.createElement(Action, { texte: brut }));
+    assert.match(html, /neutron flow/);
+    assert.doesNotMatch(html, /<button/, "proposer « VO » sur de l'anglais n'aurait aucun sens");
   });
 });

@@ -456,9 +456,36 @@ describe("compte a rebours", () => {
     assert.match(A.compteARebours(dans(38), T0), /38 min/);
     assert.match(A.compteARebours(dans(252), T0), /4 h/);
   });
-  test("bascule sur les jours au-dela de vingt-quatre heures", () => {
-    assert.match(A.compteARebours(dans(60 * 30), T0), /demain|jours/);
-    assert.match(A.compteARebours(dans(60 * 72), T0), /3 jours/);
+  test("bascule sur les nuits au-dela de vingt-quatre heures", () => {
+    assert.match(A.compteARebours(dans(60 * 30), T0), /demain soir|cette nuit/);
+    assert.match(A.compteARebours(dans(60 * 72), T0), /3 nuits/);
+  });
+
+  test("le compteur et la frise comptent la même chose", () => {
+    /* Cas reel, releve a l'ecran : « LE MATCH DU JOUR — dans 2 jours », et la
+       frise juste dessous qui rangeait ce match deux NUITS plus loin. Compter
+       en tranches de 24 h dans une application qui raisonne en nuits produit
+       des ecarts d'un cran des qu'un match commence apres minuit. */
+    const cas = [
+      // 14h a Paris le 6 → match a 03h40 dans la nuit du 7
+      ["2026-08-06T12:00:00Z", "2026-08-08T01:40:00Z", "demain soir", 1],
+      // 04h a Paris le 6 : on est encore dans la nuit du 5 → deux nuits d'ecart
+      ["2026-08-06T02:00:00Z", "2026-08-08T01:40:00Z", "dans 2 nuits", 2],
+    ];
+    for (const [t, m, attendu, ecart] of cas) {
+      const T = Date.parse(t);
+      assert.equal(A.compteARebours(m, T), attendu);
+      const nuits =
+        (new Date(A.nuitDe(m).jour) - new Date(A.nuitDe(new Date(T).toISOString()).jour)) / 864e5;
+      assert.equal(nuits, ecart, "le compteur doit suivre le découpage en nuits de la frise");
+    }
+  });
+
+  test("un match de la nuit en cours reste compté en heures", () => {
+    // 14h a Paris, match a 03h10 le lendemain : c'est la meme nuit, et treize
+    // heures se disent mieux en heures qu'en nuits.
+    assert.match(A.compteARebours("2026-08-07T01:10:00Z", Date.parse("2026-08-06T12:00:00Z")),
+      /13 h/);
   });
   test("gere l'instant present et le passe", () => {
     assert.equal(A.compteARebours(dans(0), T0), "c'est maintenant");
@@ -1600,5 +1627,111 @@ describe("l'effectif d'une équipe", () => {
     for (const c of ["fullName", "jerseyNumber", "batSide", "pitchHand", "currentAge",
                      "avg", "homeRuns", "rbi", "era", "wins", "losses", "strikeOuts", "team"])
       assert.match(A.CHAMPS_EFFECTIF, new RegExp(`\\b${c}\\b`), `champ ${c} non demandé à l'API`);
+  });
+});
+
+describe("traduction du déroulé", () => {
+  const fr = (x) => A.traduireAction(x).fr;
+
+  test("les formes les plus courantes passent en français", () => {
+    assert.equal(fr("James Wood strikes out swinging."),
+      "James Wood est retiré sur trois prises, en s'élançant.");
+    assert.equal(fr("Kyle Schwarber called out on strikes."),
+      "Kyle Schwarber est retiré sur trois prises, sans élancer.");
+    assert.equal(fr("Iván Herrera walks."), "Iván Herrera obtient un but sur balles.");
+    assert.equal(fr("Mike Trout hit by pitch."), "Mike Trout est atteint par le lancer.");
+  });
+
+  test("les positions sont contractées correctement", () => {
+    // « relayant a le premier-but » n'est pas du francais.
+    assert.equal(fr("Trea Turner grounds out, shortstop CJ Abrams to first baseman Bryce Harper."),
+      "Trea Turner est retiré au sol, l'arrêt-court CJ Abrams relayant au premier-but Bryce Harper.");
+    assert.match(fr("Wild pitch by pitcher Edgardo Henriquez."), /^Mauvais lancer du lanceur/);
+    assert.doesNotMatch(fr("Trea Turner grounds out, shortstop A B to first baseman C D."), / à le | de le /);
+  });
+
+  test("les propositions de coureurs suivent l'action", () => {
+    assert.equal(fr("Wild pitch by pitcher Edgardo Henriquez. Nico Hoerner to 2nd."),
+      "Mauvais lancer du lanceur Edgardo Henriquez. Nico Hoerner passe au 2e.");
+    assert.match(fr("Shohei Ohtani homers (41) on a fly ball to right center field. Mookie Betts scores."),
+      /circuit \(41e\).*Mookie Betts marque/);
+  });
+
+  test("les noms accentués et les initiales ne cassent pas l'analyse", () => {
+    // Un tiers de la ligue porte un accent, et `\w` les coupait en deux.
+    for (const nom of ["Nasim Nuñez", "Jasson Domínguez", "José Caballero", "A.J. Ewing",
+                       "Travis d'Arnaud", "Luis García Jr."]) {
+      const t = A.traduireAction(`${nom} strikes out swinging.`);
+      assert.ok(t.complet, `${nom} non reconnu`);
+      assert.match(t.fr, new RegExp(`^${nom.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} `));
+    }
+  });
+
+  test("jamais de moitié-moitié : une phrase qui résiste rend l'anglais entier", () => {
+    const exotique = "Manfred Man reverses the polarity of the neutron flow.";
+    const t = A.traduireAction(exotique);
+    assert.equal(t.complet, false);
+    assert.equal(t.fr, exotique, "un français troué serait pire que l'anglais");
+  });
+
+  test("l'entrée vide ne produit rien", () => {
+    for (const x of ["", null, undefined]) {
+      const t = A.traduireAction(x);
+      assert.equal(t.fr, "");
+      assert.equal(t.complet, true);
+    }
+  });
+
+  test("la traduction reste du français, sans résidu anglais", () => {
+    const restes = /\b(fielder|baseman|shortstop|pitcher|catcher|out at|scores|strikes|grounds|flies|lines|singles|doubles|homers)\b/;
+    for (const x of [
+      "Mookie Betts singles on a sharp line drive to right fielder Juan Soto. Freddie Freeman scores.",
+      "Aaron Judge grounds into a double play, shortstop Anthony Volpe to second baseman Jazz Chisholm to first baseman Ben Rice. Juan Soto out at 2nd. Aaron Judge out at 1st.",
+      "Corbin Carroll steals (30) 2nd base.",
+    ]) {
+      const t = A.traduireAction(x);
+      assert.ok(t.complet, x);
+      assert.doesNotMatch(t.fr, restes, `résidu anglais dans : ${t.fr}`);
+    }
+  });
+});
+
+describe("contraste de la palette", () => {
+  /* Le fond est un gazon tondu en BANDES : tout texte doit passer le seuil
+     sur la bande claire, pas seulement sur la sombre — sinon il devient
+     illisible une ligne sur deux. */
+  const lum = (hex) => {
+    const v = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const FONDS = ["#123D2A", "#16472F"]; // les deux bandes de la tonte
+
+  test("le gris des mentions passe le seuil du petit texte", () => {
+    // WCAG AA : 4,5:1. C'est la couleur de presque tout le texte en 9-11 px.
+    for (const fond of FONDS)
+      assert.ok(ratio(A.T.dim, fond) >= 4.5,
+        `T.dim sur ${fond} : ${ratio(A.T.dim, fond).toFixed(2)}:1`);
+  });
+
+  test("la terre battue a une variante lisible pour le texte", () => {
+    for (const fond of FONDS) {
+      assert.ok(ratio(A.T.clayLit, fond) >= 4.2,
+        `T.clayLit sur ${fond} : ${ratio(A.T.clayLit, fond).toFixed(2)}:1`);
+      // T.clay reste reserve aux bordures et aux aplats : seuil des elements
+      // d'interface, 3:1 — qu'il ne tient d'ailleurs pas non plus comme texte.
+      assert.ok(ratio(A.T.clay, fond) < 4.5, "T.clay ne doit pas servir de couleur de texte");
+    }
+  });
+
+  test("le jaune et la craie restent très lisibles", () => {
+    for (const fond of FONDS) {
+      assert.ok(ratio(A.T.sodium, fond) >= 4.5);
+      assert.ok(ratio(A.T.chalk, fond) >= 7);
+    }
   });
 });
