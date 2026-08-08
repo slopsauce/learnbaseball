@@ -1667,6 +1667,14 @@ describe("traduction du déroulé", () => {
     }
   });
 
+  test("un amorti dévié, avec sa nuance de contact, passe en français", () => {
+    assert.equal(
+      fr("Jakob Marsee singles on a soft bunt ground ball to pitcher George Klassen, " +
+         "deflected by third baseman Vaughn Grissom. Owen Caissie to 2nd."),
+      "Jakob Marsee réussit un simple sur un amorti roulant mou vers le lanceur George Klassen, " +
+      "après déviation du troisième-but Vaughn Grissom. Owen Caissie passe au 2e.");
+  });
+
   test("jamais de moitié-moitié : une phrase qui résiste rend l'anglais entier", () => {
     const exotique = "Manfred Man reverses the polarity of the neutron flow.";
     const t = A.traduireAction(exotique);

@@ -52,6 +52,8 @@ const CONTACTS = [
   ["a soft ground ball", "un roulant mou"],
   ["a ground ball", "un roulant"],
   ["a bunt ground ball", "un amorti roulant"],
+  ["a soft bunt ground ball", "un amorti roulant mou"],
+  ["a sharp bunt ground ball", "un amorti roulant appuyé"],
   ["a bunt pop up", "un amorti en chandelle"],
   ["a fly ball", "un ballon"],
   ["a pop up", "une chandelle"],
