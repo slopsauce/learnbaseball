@@ -1154,6 +1154,31 @@ function nuitDe(isoUtc) {
   return { jour, h, hhmm: `${p.hour}:${p.minute}` };
 }
 
+/* ------------------------------------------------------------------ *
+ *  LA NUIT EN COURS
+ *  Trois vues en avaient besoin, et toutes les trois la recalculaient a
+ *  la main de la meme facon :
+ *
+ *      Number(new Intl.DateTimeFormat("fr-FR", { hour: "2-digit" }).format(n))
+ *
+ *  Or ce format rend « 00 h » en francais — l'unite fait partie du
+ *  texte. `Number("00 h")` vaut NaN, `NaN < AUBE` est FAUX, et l'heure
+ *  du petit matin etait donc traitee comme une heure de soiree : entre
+ *  minuit et 7 h, les trois vues designaient la nuit SUIVANTE.
+ *
+ *  Autrement dit, precisement pendant que la ligue joue et qu'on
+ *  consulte l'application, « CE SOIR » pointait la nuit d'apres, les
+ *  parcs allumes n'etaient pas ceux qui recevaient, et le direct gardait
+ *  les mauvais matchs. Les tests ne l'avaient pas vu : ils appellent
+ *  `nuitDe`, qui lit les PARTIES du format et n'a jamais eu le defaut.
+ *
+ *  Une seule fonction desormais, batie sur `nuitDe` : le decoupage en
+ *  nuits n'a plus qu'une definition dans tout le fichier.
+ * ------------------------------------------------------------------ */
+function nuitCourante(maintenant = new Date()) {
+  return nuitDe(maintenant.toISOString()).jour;
+}
+
 /* Une nuit chevauche toujours deux dates : la soiree et le petit matin.
    L'etiqueter d'un seul jour induirait en erreur pour un match a 01h10. */
 function libelleNuit(iso) {
@@ -2264,8 +2289,20 @@ function ReglageAvertissements({ actif, sur, nbSuivies, permission = "default" }
   );
 }
 
+/* La frise ouvre sur la nuit PRECEDENTE, pas sur celle qui vient : ses matchs
+   sont joues, donc notes, resumes et filmes — c'est la seule ou il y ait
+   quelque chose a regarder tout de suite. La suivante, elle, n'a encore rien
+   a montrer.
+   Elle se compte en nuits et non en jours de calendrier : `jourParis() - 1`
+   tombait sur la nuit EN COURS des qu'il etait minuit passe, et la veille —
+   celle des videos — disparaissait de la frise au moment precis ou l'on vient
+   les chercher. */
+function departFrise(maintenant = new Date()) {
+  return decalerJour(nuitCourante(maintenant), -1);
+}
+
 function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null, permission = "default" }) {
-  const [ancre, setAncre] = useState(() => decalerJour(jourParis(), -1));
+  const [ancre, setAncre] = useState(departFrise);
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
   const [erreur, setErreur] = useState("");
@@ -2609,16 +2646,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
   const miens = toutes ? 0 : aSuivre.length;
 
-  // La nuit "en cours" : avant 7h du matin, on est encore dans celle d'hier.
-  const nuitCourante = useMemo(() => {
-    const n = new Date();
-    const h = Number(
-      new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" })
-        .format(n)
-    );
-    const auj = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
-    return h < AUBE ? decalerJour(auj, -1) : auj;
-  }, []);
+  // La nuit « en cours » : avant 7h du matin, on est encore dans celle d'hier.
+  const ceteNuit = useMemo(() => nuitCourante(), []);
 
   /* Une fois les pastilles a leur vraie taille, quatorze nuits font sept
      metres de page sur un telephone — on cherchait ce soir, on defile cinq
@@ -2627,11 +2656,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
      cours est toujours dans le lot montre. */
   const [frisePliee, setFriseePliee] = useState(true);
   const NUITS_REPLIEES = 5;
-  const nuitsVues = useMemo(() => {
-    if (!etroit || !frisePliee) return nuits;
-    const i = Math.max(0, nuits.indexOf(nuitCourante));
-    return nuits.slice(i, i + NUITS_REPLIEES);
-  }, [nuits, etroit, frisePliee, nuitCourante]);
+  const nuitsVues = useMemo(
+    // Depuis le debut de la fenetre : la veille et ses videos sont la raison
+    // d'ouvrir cet onglet, les replier serait les cacher.
+    () => (etroit && frisePliee ? nuits.slice(0, NUITS_REPLIEES) : nuits),
+    [nuits, etroit, frisePliee]
+  );
 
   /* Interroge winProbability pour les matchs termines actuellement affiches.
      Le filtre `fields` fait tomber la reponse de 1,1 Mo a 9,5 Ko par match ;
@@ -2681,7 +2711,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         </button>
         <button
           className="alm-btn"
-          onClick={() => setAncre(decalerJour(jourParis(), -1))}
+          onClick={() => setAncre(departFrise())}
           style={btnStyle(false)}
         >
           aujourd'hui
@@ -3051,7 +3081,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             const liste = parNuit.get(n) || [];
             const voies = liste.length ? Math.max(...liste.map((m) => m.voie)) + 1 : 1;
             const l = libelleNuit(n);
-            const ceSoir = n === nuitCourante;
+            const ceSoir = n === ceteNuit;
             return (
               <div key={n}>
               <div style={{ display: "flex", gap: 12, marginBottom: 4 }}>
@@ -3334,9 +3364,7 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
     )
       .then((d) => {
         if (annule) return;
-        const n = new Date();
-        const h = Number(new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(n));
-        const nuit = h < AUBE ? decalerJour(jourParis(n), -1) : jourParis(n);
+        const nuit = nuitCourante();
         const out = [];
         for (const jr of d.dates || [])
           for (const g of jr.games || []) {
@@ -3906,12 +3934,7 @@ function VueDirect({ teams, suivies = [] }) {
           if (annule) return;
           // On garde les matchs en cours ET ceux de la nuit ecoulee : le cas
           // le plus frequent depuis la France est de se lever apres coup.
-          const n = new Date();
-          const h = Number(
-            new Intl.DateTimeFormat("fr-FR", { timeZone: TZ, hour: "2-digit", hourCycle: "h23" }).format(n)
-          );
-          const jour = new Intl.DateTimeFormat("en-CA", { timeZone: TZ }).format(n);
-          const nuit = h < AUBE ? decalerJour(jour, -1) : jour;
+          const nuit = nuitCourante();
 
           const l = (d.dates || [])
             .flatMap((x) => x.games || [])
@@ -5610,7 +5633,7 @@ export {
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »
-  VueNuits, nuitDe, decalerJour, libelleNuit, repartirEnVoies,
+  VueNuits, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,

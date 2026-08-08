@@ -1743,3 +1743,92 @@ describe("contraste de la palette", () => {
     }
   });
 });
+
+describe("la nuit en cours", () => {
+  /* Le decoupage en nuits est la colonne vertebrale de l'application : la
+     frise, les parcs allumes et le direct s'y accrochent tous les trois. Il
+     n'a le droit d'exister qu'a un seul endroit. */
+  const a = (iso) => A.nuitCourante(new Date(iso));
+
+  test("avant l'aube, on appartient encore à la nuit de la veille", () => {
+    /* LE BUG : les trois vues lisaient l'heure avec
+       `Number(Intl.DateTimeFormat("fr-FR", { hour: "2-digit" }).format(n))`.
+       Ce format rend « 00 h » — l'unite fait partie du texte — donc Number()
+       donnait NaN, `NaN < AUBE` etait faux, et minuit etait traite comme une
+       heure de soiree. Entre minuit et 7 h, soit exactement les heures ou la
+       ligue joue, les trois vues designaient la nuit SUIVANTE. */
+    assert.equal(a("2026-08-07T22:04:00Z"), "2026-08-07", "samedi 00h04 → la nuit du vendredi");
+    assert.equal(a("2026-08-08T00:30:00Z"), "2026-08-07", "samedi 02h30 → la nuit du vendredi");
+    assert.equal(a("2026-08-08T04:59:00Z"), "2026-08-07", "samedi 06h59 → encore la nuit du vendredi");
+  });
+
+  test("à partir de l'aube, la nuit du jour commence", () => {
+    assert.equal(a("2026-08-08T05:00:00Z"), "2026-08-08", "samedi 07h00 → la nuit du samedi");
+    assert.equal(a("2026-08-08T12:00:00Z"), "2026-08-08");
+    assert.equal(a("2026-08-08T20:00:00Z"), "2026-08-08", "samedi 22h → la nuit du samedi");
+  });
+
+  test("l'heure n'est jamais relue depuis du texte localisé", () => {
+    // Garde-fou direct contre la rechute : `Number` sur un format francais.
+    const brut = new Intl.DateTimeFormat("fr-FR", {
+      timeZone: "Europe/Paris", hour: "2-digit", hourCycle: "h23",
+    }).format(new Date("2026-08-07T22:04:00Z"));
+    assert.ok(Number.isNaN(Number(brut)),
+      `le piege a disparu (« ${brut} ») — le commentaire de nuitCourante est à revoir`);
+    // Et pourtant la fonction, elle, tombe juste.
+    assert.equal(a("2026-08-07T22:04:00Z"), "2026-08-07");
+  });
+
+  test("elle donne le même découpage que celui des matchs", () => {
+    // Un match a 01h10 doit tomber dans la nuit que la vue dit « en cours ».
+    const match = "2026-08-08T23:10:00Z"; // 01h10 a Paris, le dimanche
+    assert.equal(A.nuitDe(match).jour, a("2026-08-08T23:15:00Z"));
+  });
+
+  test("le changement d'heure ne la décale pas", () => {
+    // Nuit du passage a l'heure d'hiver : 03h00 devient 02h00 a Paris.
+    assert.equal(a("2026-10-25T00:30:00Z"), "2026-10-24", "02h30 heure d'ete → nuit du 24");
+    assert.equal(a("2026-10-25T02:30:00Z"), "2026-10-24", "03h30 heure d'hiver → nuit du 24");
+    assert.equal(a("2026-10-25T09:00:00Z"), "2026-10-25", "10h → nuit du 25");
+  });
+});
+
+describe("le départ de la frise", () => {
+  /* La frise ouvre sur la nuit PRECEDENTE : ses matchs sont joues, donc
+     notes, resumes et filmes. C'est la seule ou il y ait quelque chose a
+     regarder tout de suite — la raison meme d'ouvrir cet onglet. */
+  const d = (iso) => A.departFrise(new Date(iso));
+
+  test("elle commence toujours une nuit avant celle en cours", () => {
+    for (const iso of [
+      "2026-08-07T22:04:00Z", // samedi 00h04 — apres minuit
+      "2026-08-08T04:30:00Z", // samedi 06h30 — juste avant l'aube
+      "2026-08-08T12:00:00Z", // samedi 14h00 — en pleine journee
+      "2026-08-08T20:00:00Z", // samedi 22h00 — la nuit a commence
+    ]) {
+      const maintenant = new Date(iso);
+      assert.equal(
+        d(iso), A.decalerJour(A.nuitCourante(maintenant), -1),
+        `départ incorrect à ${iso}`
+      );
+    }
+  });
+
+  test("passé minuit, la veille ne disparaît pas de la frise", () => {
+    /* LE BUG : le depart se calculait en jours de calendrier
+       (`jourParis() - 1`), ce qui tombait sur la nuit EN COURS des qu'il
+       etait minuit passe. La veille — celle dont les videos existent —
+       sortait de la frise a l'heure precise ou l'on vient les chercher. */
+    const nuit = "2026-08-07T22:04:00Z";                 // samedi 00h04 a Paris
+    assert.equal(A.nuitCourante(new Date(nuit)), "2026-08-07");
+    assert.equal(d(nuit), "2026-08-06", "la frise doit ouvrir sur la nuit du jeudi au vendredi");
+    // Et le calcul fautif, pour memoire : il rendait la nuit en cours.
+    assert.equal(A.decalerJour(A.jourParis(new Date(nuit)), -1), "2026-08-07");
+  });
+
+  test("en journée, le départ ne bouge pas non plus", () => {
+    // A 14h le samedi, la nuit en cours est celle du samedi : on ouvre sur
+    // celle du vendredi, jouee la nuit derniere.
+    assert.equal(d("2026-08-08T12:00:00Z"), "2026-08-07");
+  });
+});
