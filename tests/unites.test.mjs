@@ -1792,3 +1792,43 @@ describe("la nuit en cours", () => {
     assert.equal(a("2026-10-25T09:00:00Z"), "2026-10-25", "10h → nuit du 25");
   });
 });
+
+describe("le départ de la frise", () => {
+  /* La frise ouvre sur la nuit PRECEDENTE : ses matchs sont joues, donc
+     notes, resumes et filmes. C'est la seule ou il y ait quelque chose a
+     regarder tout de suite — la raison meme d'ouvrir cet onglet. */
+  const d = (iso) => A.departFrise(new Date(iso));
+
+  test("elle commence toujours une nuit avant celle en cours", () => {
+    for (const iso of [
+      "2026-08-07T22:04:00Z", // samedi 00h04 — apres minuit
+      "2026-08-08T04:30:00Z", // samedi 06h30 — juste avant l'aube
+      "2026-08-08T12:00:00Z", // samedi 14h00 — en pleine journee
+      "2026-08-08T20:00:00Z", // samedi 22h00 — la nuit a commence
+    ]) {
+      const maintenant = new Date(iso);
+      assert.equal(
+        d(iso), A.decalerJour(A.nuitCourante(maintenant), -1),
+        `départ incorrect à ${iso}`
+      );
+    }
+  });
+
+  test("passé minuit, la veille ne disparaît pas de la frise", () => {
+    /* LE BUG : le depart se calculait en jours de calendrier
+       (`jourParis() - 1`), ce qui tombait sur la nuit EN COURS des qu'il
+       etait minuit passe. La veille — celle dont les videos existent —
+       sortait de la frise a l'heure precise ou l'on vient les chercher. */
+    const nuit = "2026-08-07T22:04:00Z";                 // samedi 00h04 a Paris
+    assert.equal(A.nuitCourante(new Date(nuit)), "2026-08-07");
+    assert.equal(d(nuit), "2026-08-06", "la frise doit ouvrir sur la nuit du jeudi au vendredi");
+    // Et le calcul fautif, pour memoire : il rendait la nuit en cours.
+    assert.equal(A.decalerJour(A.jourParis(new Date(nuit)), -1), "2026-08-07");
+  });
+
+  test("en journée, le départ ne bouge pas non plus", () => {
+    // A 14h le samedi, la nuit en cours est celle du samedi : on ouvre sur
+    // celle du vendredi, jouee la nuit derniere.
+    assert.equal(d("2026-08-08T12:00:00Z"), "2026-08-07");
+  });
+});

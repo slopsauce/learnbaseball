@@ -2289,8 +2289,20 @@ function ReglageAvertissements({ actif, sur, nbSuivies, permission = "default" }
   );
 }
 
+/* La frise ouvre sur la nuit PRECEDENTE, pas sur celle qui vient : ses matchs
+   sont joues, donc notes, resumes et filmes — c'est la seule ou il y ait
+   quelque chose a regarder tout de suite. La suivante, elle, n'a encore rien
+   a montrer.
+   Elle se compte en nuits et non en jours de calendrier : `jourParis() - 1`
+   tombait sur la nuit EN COURS des qu'il etait minuit passe, et la veille —
+   celle des videos — disparaissait de la frise au moment precis ou l'on vient
+   les chercher. */
+function departFrise(maintenant = new Date()) {
+  return decalerJour(nuitCourante(maintenant), -1);
+}
+
 function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null, permission = "default" }) {
-  const [ancre, setAncre] = useState(() => decalerJour(jourParis(), -1));
+  const [ancre, setAncre] = useState(departFrise);
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
   const [erreur, setErreur] = useState("");
@@ -2644,11 +2656,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
      cours est toujours dans le lot montre. */
   const [frisePliee, setFriseePliee] = useState(true);
   const NUITS_REPLIEES = 5;
-  const nuitsVues = useMemo(() => {
-    if (!etroit || !frisePliee) return nuits;
-    const i = Math.max(0, nuits.indexOf(ceteNuit));
-    return nuits.slice(i, i + NUITS_REPLIEES);
-  }, [nuits, etroit, frisePliee, ceteNuit]);
+  const nuitsVues = useMemo(
+    // Depuis le debut de la fenetre : la veille et ses videos sont la raison
+    // d'ouvrir cet onglet, les replier serait les cacher.
+    () => (etroit && frisePliee ? nuits.slice(0, NUITS_REPLIEES) : nuits),
+    [nuits, etroit, frisePliee]
+  );
 
   /* Interroge winProbability pour les matchs termines actuellement affiches.
      Le filtre `fields` fait tomber la reponse de 1,1 Mo a 9,5 Ko par match ;
@@ -2698,7 +2711,7 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         </button>
         <button
           className="alm-btn"
-          onClick={() => setAncre(decalerJour(jourParis(), -1))}
+          onClick={() => setAncre(departFrise())}
           style={btnStyle(false)}
         >
           aujourd'hui
@@ -5620,7 +5633,7 @@ export {
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »
-  VueNuits, nuitDe, nuitCourante, decalerJour, libelleNuit, repartirEnVoies,
+  VueNuits, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
