@@ -7,6 +7,7 @@ import { traduireAction } from "./donnees/traduction.js";
 import {
   simuler, ajusterRotation, sprayDepuisCoords, murDuParc, ROTATION_MAX,
 } from "./donnees/balistique.js";
+import { couleurEquipe } from "./donnees/couleurs-equipes.js";
 
 /* ------------------------------------------------------------------ *
  *  L'ALMANACH
@@ -4849,7 +4850,7 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
    envisageable au lieu d'etre absurde. */
 const CHAMPS_CIRCUITS =
   "allPlays,result,eventType,description,rbi,about,inning,halfInning," +
-  "matchup,batter,id,fullName,playEvents,hitData,launchSpeed,launchAngle," +
+  "matchup,batter,id,fullName,playEvents,playId,hitData,launchSpeed,launchAngle," +
   "totalDistance,coordinates,coordX,coordY";
 
 /* Les circuits d'un match, avec ce qu'il faut pour les redessiner. Un
@@ -4869,6 +4870,9 @@ function circuitsDuMatch(pbp, match) {
     const haut = p.about?.halfInning === "top";
     out.push({
       cle: `${match.id}-${p.about?.inning}-${p.about?.halfInning}-${p.matchup?.batter?.id}`,
+      // Le playId du lancer frappe EST le guid du clip : c'est par la que la
+      // video se raccroche a l'action, sans autre requete que le contenu.
+      playId: (p.playEvents || []).map((e) => e.playId).filter(Boolean).pop() || null,
       idMatch: match.id,
       idStade: match.idStade,
       frappeur: p.matchup?.batter?.fullName || "?",
@@ -5008,6 +5012,10 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
         const vol = simuler(c.ev, c.la, c.spray, rotation);
         return {
           ...c,
+          /* La couleur de l'equipe, et non une teinte unique : sur une nuit
+             entiere, vingt-huit courbes jaunes ne se distinguent pas. */
+          couleur: parseInt(couleurEquipe(c.idEquipe).slice(1), 16),
+          couleurCss: couleurEquipe(c.idEquipe),
           rotation: Math.round(rotation),
           sature: rotation >= ROTATION_MAX - 10,
           apex: Math.round(vol.apex),
@@ -5025,6 +5033,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
      meme vit dans le morceau charge a la demande : c'est la scene qui choisit
      entre le contour reel et la cloture interpolee, et qui dit lequel. */
   const idStade = !toute && circuits.length ? circuits[0].idStade : null;
+  const nbParcs = useMemo(() => new Set(circuits.map((c) => c.idStade)).size, [circuits]);
   const stade = idStade ? stades[idStade] : null;
   const [parc, setParc] = useState(null);
 
@@ -5066,6 +5075,24 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
           Nuit du {libelleNuit(nuitMontree).soir} au {libelleNuit(nuitMontree).matin} ·{" "}
           {circuits.length} circuit{circuits.length > 1 ? "s" : ""} mesuré
           {circuits.length > 1 ? "s" : ""}
+          {nbParcs > 1 ? ` · ${nbParcs} parcs` : ""}
+        </p>
+      )}
+
+      {/* Le parc, nomme. La scene en dessine le contour sans jamais dire
+          lequel : on ne sait pas si c'est le mur qu'on croit. Le nom renvoie
+          a sa fiche dans « les terrains », ou l'altitude et les dimensions
+          expliquent souvent la trajectoire qu'on vient de regarder. */}
+      {!toute && stade?.nom && phase === "ok" && (
+        <p
+          style={{
+            fontFamily: FF_MONO, fontSize: 10, color: T.dim,
+            margin: "0 0 12px", lineHeight: 1.7,
+          }}
+        >
+          <LienStade idStade={idStade} nom={stade.nom} style={{ fontSize: 11 }} />
+          {stade.ville ? ` · ${stade.ville}` : ""}
+          {distancesCloture(stade) ? ` · clôtures ${distancesCloture(stade).pi}` : ""}
         </p>
       )}
 
@@ -5118,7 +5145,15 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
                     all: "unset", cursor: "pointer", boxSizing: "border-box",
                     display: "flex", alignItems: "center", gap: 10, minWidth: 0,
                     background: sel ? "rgba(242,206,107,.12)" : "rgba(11,36,26,.55)",
-                    border: `1px solid ${sel ? T.sodium : "rgba(239,243,234,.16)"}`,
+                    /* Bordures en proprietes longues : melanger le raccourci
+                       `border` et `borderLeft` laisse React choisir l'ordre au
+                       rerendu, et il previent que ca finira mal. */
+                    borderTop: `1px solid ${sel ? T.sodium : "rgba(239,243,234,.16)"}`,
+                    borderRight: `1px solid ${sel ? T.sodium : "rgba(239,243,234,.16)"}`,
+                    borderBottom: `1px solid ${sel ? T.sodium : "rgba(239,243,234,.16)"}`,
+                    // La couleur de l'equipe en tranche a gauche : c'est la
+                    // legende de la scene, sans legende separee a lire.
+                    borderLeft: `4px solid ${c.couleurCss}`,
                     borderRadius: 3, padding: "9px 11px",
                   }}
                 >
@@ -5147,6 +5182,8 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
               );
             })}
           </div>
+
+          {ouvert && <ClipCircuit circuit={circuits.find((c) => c.cle === ouvert)} />}
 
           <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, lineHeight: 1.7, marginTop: 14 }}>
             <strong>Mesuré</strong> : la vitesse de sortie, l'angle d'envol, la distance et le point
@@ -5177,6 +5214,72 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ *  LE CLIP DU CIRCUIT
+ *  Le `playId` du lancer frappe est le `guid` du clip officiel : la
+ *  jointure existe deja dans le carnet, on la reutilise telle quelle.
+ *
+ *  Le contenu d'un match pese 469 Ko et ignore le filtre `fields` — on
+ *  ne peut donc pas le charger d'avance, encore moins pour les quinze
+ *  matchs d'une nuit. Il part au moment ou l'on ouvre un circuit, une
+ *  fois par match, et le resultat est garde : rouvrir un autre circuit
+ *  du meme match ne recoute rien.
+ * ------------------------------------------------------------------ */
+function ClipCircuit({ circuit }) {
+  const [clips, setClips] = useState({});   // gamePk -> Map(playId -> clip) | null
+  const idMatch = circuit?.idMatch;
+
+  useEffect(() => {
+    if (!idMatch || clips[idMatch] !== undefined) return;
+    let annule = false;
+    jsonMlb(`${API}/game/${idMatch}/content`)
+      .then((c) => !annule && setClips((x) => ({ ...x, [idMatch]: indexerClips(c) })))
+      // Un match sans contenu n'est pas une panne : beaucoup d'actions ne
+      // sont pas filmees, et la fiche vaut sans la video.
+      .catch(() => !annule && setClips((x) => ({ ...x, [idMatch]: null })));
+    return () => { annule = true; };
+  }, [idMatch, clips]);
+
+  if (!circuit) return null;
+  const index = clips[idMatch];
+  const clip = index && circuit.playId ? index.get(circuit.playId) : null;
+
+  if (index === undefined) {
+    return (
+      <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 10 }}>
+        Recherche du clip…
+      </p>
+    );
+  }
+  if (!clip) {
+    return (
+      <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, marginTop: 10 }}>
+        Ce circuit n'a pas de clip officiel indexé.
+      </p>
+    );
+  }
+  return (
+    <div style={{ marginTop: 10 }}>
+      <video
+        key={clip.url}
+        src={clip.url}
+        poster={clip.poster}
+        controls
+        preload="none"
+        playsInline
+        style={{
+          width: "100%", display: "block", borderRadius: 3,
+          background: "#000", border: `1px solid ${T.sodium}`,
+        }}
+      />
+      <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, margin: "5px 0 0" }}>
+        {clip.titre}
+        {clip.duree ? ` · ${String(clip.duree).replace(/^00:/, "")}` : ""}
+      </p>
+    </div>
+  );
+}
+
 /* Le conteneur de la scene : c'est lui qui va chercher le moteur 3D, et
    c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
    n'execute pas les effets, donc rien de tout cela ne part en cascade dans
@@ -5196,7 +5299,7 @@ function SceneCircuits({ circuits, idStade, distances, ouvert, onParc }) {
       .then(({ monterScene }) => {
         if (!vivant || !boite.current) return;
         poignee.current = monterScene(boite.current, {
-          circuits: circuits.map((c) => ({ points: c.points, couleur: c.sature ? 0xc2603a : 0xf2ce6b })),
+          circuits: circuits.map((c) => ({ points: c.points, couleur: c.couleur })),
           idStade,
           distances,
           animer: doux.current,
@@ -6063,7 +6166,7 @@ export {
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
   GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
   // vue « les circuits »
-  VueCircuits, SceneCircuits, circuitsDuMatch, CHAMPS_CIRCUITS,
+  VueCircuits, SceneCircuits, ClipCircuit, circuitsDuMatch, CHAMPS_CIRCUITS,
   simuler, ajusterRotation, sprayDepuisCoords, murDuParc, ROTATION_MAX,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
