@@ -5033,6 +5033,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
      meme vit dans le morceau charge a la demande : c'est la scene qui choisit
      entre le contour reel et la cloture interpolee, et qui dit lequel. */
   const idStade = !toute && circuits.length ? circuits[0].idStade : null;
+  const nbParcs = useMemo(() => new Set(circuits.map((c) => c.idStade)).size, [circuits]);
   const stade = idStade ? stades[idStade] : null;
   const [parc, setParc] = useState(null);
 
@@ -5074,6 +5075,24 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
           Nuit du {libelleNuit(nuitMontree).soir} au {libelleNuit(nuitMontree).matin} ·{" "}
           {circuits.length} circuit{circuits.length > 1 ? "s" : ""} mesuré
           {circuits.length > 1 ? "s" : ""}
+          {nbParcs > 1 ? ` · ${nbParcs} parcs` : ""}
+        </p>
+      )}
+
+      {/* Le parc, nomme. La scene en dessine le contour sans jamais dire
+          lequel : on ne sait pas si c'est le mur qu'on croit. Le nom renvoie
+          a sa fiche dans « les terrains », ou l'altitude et les dimensions
+          expliquent souvent la trajectoire qu'on vient de regarder. */}
+      {!toute && stade?.nom && phase === "ok" && (
+        <p
+          style={{
+            fontFamily: FF_MONO, fontSize: 10, color: T.dim,
+            margin: "0 0 12px", lineHeight: 1.7,
+          }}
+        >
+          <LienStade idStade={idStade} nom={stade.nom} style={{ fontSize: 11 }} />
+          {stade.ville ? ` · ${stade.ville}` : ""}
+          {distancesCloture(stade) ? ` · clôtures ${distancesCloture(stade).pi}` : ""}
         </p>
       )}
 
