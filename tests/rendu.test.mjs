@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -534,5 +534,33 @@ describe("rendu de la vue Circuits", () => {
     // lesquels de ses chiffres sont des mesures.
     const html = rendre(React.createElement(VueCircuits, { teams: [equipe], suivies: [119] }));
     assert.match(html, /le vol de bout en bout/);
+  });
+});
+
+describe("le clip d'un circuit", () => {
+  test("il annonce sa recherche avant que le contenu n'arrive", () => {
+    /* Le contenu d'un match pese 469 Ko et ignore le filtre `fields` : il ne
+       part qu'a l'ouverture d'un circuit. Entre-temps, l'ecran le dit. */
+    const html = rendre(React.createElement(ClipCircuit, {
+      circuit: { idMatch: 7, playId: "abc", cle: "x" },
+    }));
+    assert.match(html, /Recherche du clip/);
+    assert.doesNotMatch(html, /<video/, "aucune vidéo tant que le clip n'est pas trouvé");
+  });
+
+  test("sans circuit ouvert, il ne rend rien", () => {
+    assert.equal(rendre(React.createElement(ClipCircuit, { circuit: null })), "");
+  });
+});
+
+describe("les couleurs dans la liste", () => {
+  test("chaque fiche porte la couleur de son équipe", () => {
+    // La tranche de couleur est la legende de la scene : sans elle, vingt-huit
+    // courbes se ressemblent.
+    const html = rendre(React.createElement(VueCircuits, { teams: [equipe], suivies: [119] }));
+    // La vue est en chargement au rendu serveur : on verifie au moins que le
+    // melange raccourci/propriete longue a disparu du style des fiches.
+    assert.doesNotMatch(html, /border:[^;"]*;[^"]*border-left:/,
+      "mélanger `border` et `borderLeft` laisse React choisir l'ordre au rerendu");
   });
 });

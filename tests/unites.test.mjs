@@ -1959,9 +1959,26 @@ describe("extraction des circuits", () => {
       assert.deepEqual(A.circuitsDuMatch(x, match), []);
   });
 
+  test("le playId du lancer frappé est retenu : c'est la clé du clip", () => {
+    /* Le `playId` du lancer mis en jeu EST le `guid` du clip officiel. Sans
+       lui, la video ne peut pas se raccrocher a l'action. */
+    const avecId = {
+      result: { eventType: "home_run", rbi: 1 },
+      about: { inning: 3, halfInning: "top" },
+      matchup: { batter: { id: 1, fullName: "Un Frappeur" } },
+      playEvents: [
+        { playId: "aaa-111" },
+        { playId: "bbb-222", hitData: { launchSpeed: 105, launchAngle: 30, totalDistance: 411,
+          coordinates: { coordX: 163.06, coordY: 36.88 } } },
+      ],
+    };
+    const c = A.circuitsDuMatch({ allPlays: [avecId] }, match);
+    assert.equal(c[0].playId, "bbb-222", "c'est le lancer frappé, donc le dernier");
+  });
+
   test("le filtre de champs demande ce que l'extraction lit", () => {
     for (const champ of ["launchSpeed", "launchAngle", "totalDistance", "coordX", "coordY",
-                         "playEvents", "hitData", "eventType", "halfInning", "batter"])
+                         "playEvents", "playId", "hitData", "eventType", "halfInning", "batter"])
       assert.match(A.CHAMPS_CIRCUITS, new RegExp(`\\b${champ}\\b`), `champ ${champ} non demandé`);
   });
 });
@@ -2028,5 +2045,74 @@ describe("le tracé des parcs", () => {
       assert.ok(ang[0] < -40 && ang[ang.length - 1] > 40,
         `${t.n} : l'arc ne couvre pas les deux lignes de faute (${ang[0].toFixed(0)}° → ${ang[ang.length - 1].toFixed(0)}°)`);
     }
+  });
+});
+
+const { COULEURS, couleurEquipe, COULEUR_DEFAUT } =
+  await import("../src/donnees/couleurs-equipes.js");
+
+describe("les couleurs des franchises", () => {
+
+  const lum = (hex) => {
+    const v = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
+      .map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  };
+  const ratio = (a, b) => {
+    const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+    return (x + 0.05) / (y + 0.05);
+  };
+  const GAZON = "#2f6b3f", CIEL = "#0b241a";
+
+  test("les trente franchises ont la leur", () => {
+    assert.equal(Object.keys(COULEURS).length, 30);
+    for (const [id, v] of Object.entries(COULEURS)) {
+      assert.match(v.c, /^#[0-9a-f]{6}$/, `couleur mal formée : ${id}`);
+      assert.match(v.brut, /^#[0-9a-f]{6}$/, `couleur d'écusson mal formée : ${id}`);
+    }
+  });
+
+  test("aucune trajectoire ne se perd dans le terrain", () => {
+    /* Elles passent au-dessus du gazon ET du ciel de la scene : une couleur
+       lisible sur l'un peut disparaitre sur l'autre. Le vert des Athletics et
+       le marine des Braves, pris bruts, s'effacaient sur la pelouse. */
+    for (const v of Object.values(COULEURS)) {
+      assert.ok(ratio(v.c, GAZON) >= 1.85, `${v.c} sur le gazon : ${ratio(v.c, GAZON).toFixed(2)}`);
+      assert.ok(ratio(v.c, CIEL) >= 2.9, `${v.c} sur le ciel : ${ratio(v.c, CIEL).toFixed(2)}`);
+    }
+  });
+
+  test("deux équipes ne portent jamais la même couleur", () => {
+    // Sur une nuit entiere, la couleur est la seule legende de la scene.
+    const vues = new Set(Object.values(COULEURS).map((v) => v.c));
+    assert.equal(vues.size, 30);
+  });
+
+  test("la teinte de l'écusson est conservée", () => {
+    /* On n'a le droit d'eclaircir que la clarte : la teinte est ce qui fait
+       reconnaitre une equipe. Sans cette regle, le rouge de Cincinnati
+       pouvait devenir rose orange en montant. */
+    const teinte = (hex) => {
+      const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      if (max === min) return null; // un gris n'a pas de teinte a preserver
+      const d = max - min;
+      const h = max === r ? ((g - b) / d + 6) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      return h * 60;
+    };
+    for (const v of Object.values(COULEURS)) {
+      const a = teinte(v.brut), b = teinte(v.c);
+      if (a == null || b == null) continue;
+      const ecart = Math.min(Math.abs(a - b), 360 - Math.abs(a - b));
+      assert.ok(ecart < 12, `${v.brut} → ${v.c} : la teinte a bougé de ${ecart.toFixed(0)}°`);
+    }
+  });
+
+  test("une équipe hors ligue retombe sur la couleur par défaut", () => {
+    // Entrainement de printemps, equipes invitees : l'identifiant n'est pas
+    // celui d'une des trente.
+    assert.equal(couleurEquipe(999999), COULEUR_DEFAUT);
+    assert.equal(couleurEquipe(undefined), COULEUR_DEFAUT);
+    assert.equal(couleurEquipe(119), COULEURS[119].c);
   });
 });
