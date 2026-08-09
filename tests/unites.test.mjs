@@ -1832,3 +1832,136 @@ describe("le départ de la frise", () => {
     assert.equal(d("2026-08-08T12:00:00Z"), "2026-08-07");
   });
 });
+
+describe("balistique d'un circuit", () => {
+  test("la rotation ajustée fait retomber la balle à la distance annoncée", () => {
+    /* C'est tout le contrat de la reconstruction : la trajectoire doit passer
+       par les trois points mesures — depart, angle, point de chute. Le reste
+       est du calcul, mais ces trois-la sont des faits. */
+    for (const [ev, la, spray, dist] of [
+      [110.2, 20, 31.2, 376], [101.5, 27, 10.9, 420],
+      [104.4, 37, 38.9, 405], [100.6, 23, -25.9, 367], [98, 32, 5, 366],
+    ]) {
+      const rot = A.ajusterRotation(ev, la, spray, dist);
+      const vol = A.simuler(ev, la, spray, rot);
+      assert.ok(Math.abs(vol.distance - dist) < 2,
+        `${ev} mph / ${la}° visait ${dist} pi, obtenu ${vol.distance.toFixed(1)}`);
+      assert.ok(vol.apex > 20 && vol.apex < 300, `apex invraisemblable : ${vol.apex}`);
+      assert.ok(vol.vol > 1 && vol.vol < 10, `temps de vol invraisemblable : ${vol.vol}`);
+    }
+  });
+
+  test("une balle qu'aucune rotation n'explique sature au lieu de mentir", () => {
+    // 106 mph a 43 degres ne fait pas 413 pieds sans vent arriere : la
+    // dichotomie bute sur son plafond, et c'est ce plafond qui le signale.
+    const rot = A.ajusterRotation(106.3, 43, 24.5, 413);
+    assert.ok(rot >= A.ROTATION_MAX - 10, `rotation ${rot} : la saturation devrait être atteinte`);
+    assert.ok(A.simuler(106.3, 43, 24.5, rot).distance < 413,
+      "et la distance simulée doit rester en deçà — c'est le signe du vent");
+  });
+
+  test("plus de rotation, plus de distance", () => {
+    // La monotonie est ce qui rend la dichotomie legitime.
+    const d = (r) => A.simuler(103, 28, 0, r).distance;
+    let precedent = d(0);
+    for (const r of [500, 1500, 2500, 3500, 4500]) {
+      const x = d(r);
+      assert.ok(x > precedent, `${r} tr/min ne porte pas plus loin que le précédent`);
+      precedent = x;
+    }
+  });
+
+  test("le spray se lit depuis les coordonnées de la feuille de match", () => {
+    assert.ok(Math.abs(A.sprayDepuisCoords(163.06, 36.88) - 13.1) < 0.2, "vers le champ droit");
+    assert.ok(Math.abs(A.sprayDepuisCoords(49.43, 57.6) + 28.4) < 0.2, "vers le champ gauche");
+    // Plein centre : le marbre est a (125.42, 198.27).
+    assert.ok(Math.abs(A.sprayDepuisCoords(125.42, 50)) < 0.01);
+  });
+
+  test("une coordonnée hors des lignes de faute est refusée", () => {
+    // Mieux vaut ne rien dessiner qu'une balle partie dans les tribunes.
+    for (const [x, y] of [[10, 190], [240, 190], [0, 0]])
+      assert.equal(A.sprayDepuisCoords(x, y), null, `${x},${y} aurait dû être écarté`);
+    assert.equal(A.sprayDepuisCoords(NaN, 50), null);
+    assert.equal(A.sprayDepuisCoords(undefined, undefined), null);
+  });
+
+  test("le mur passe exactement par les trois distances connues", () => {
+    const mur = A.murDuParc({ gauche: 355, centre: 400, droite: 353 });
+    const rayon = (i) => Math.hypot(mur[i][0], mur[i][1]);
+    // Le milieu doit exister : c'est le champ centre, seul point du mur dont
+    // la distance soit publiee autrement que par les lignes.
+    assert.equal((mur.length - 1) % 2, 0, "le champ centre doit tomber sur un échantillon");
+    assert.ok(Math.abs(rayon(0) - 355) < 0.5, "ligne gauche");
+    assert.ok(Math.abs(rayon((mur.length - 1) / 2) - 400) < 0.5, "champ centre");
+    assert.ok(Math.abs(rayon(mur.length - 1) - 353) < 0.5, "ligne droite");
+  });
+
+  test("sans les trois distances, pas de mur inventé", () => {
+    for (const s of [{}, { gauche: 330, centre: null, droite: 330 }, { gauche: 0, centre: 400, droite: 330 }])
+      assert.equal(A.murDuParc(s), null, `${JSON.stringify(s)} aurait dû être refusé`);
+  });
+});
+
+describe("extraction des circuits", () => {
+  const match = { id: 7, idStade: 22, idExt: 147, idDom: 119 };
+  const coup = (o = {}) => ({
+    result: { eventType: "home_run", rbi: 1, ...(o.result || {}) },
+    about: { inning: 3, halfInning: "top", ...(o.about || {}) },
+    matchup: { batter: { id: 1, fullName: "Un Frappeur" } },
+    playEvents: o.playEvents !== undefined ? o.playEvents : [
+      { details: {} },
+      { hitData: { launchSpeed: 105, launchAngle: 30, totalDistance: 411,
+                   coordinates: { coordX: 163.06, coordY: 36.88 } } },
+    ],
+  });
+
+  test("les mesures se lisent sur le lancer frappé, pas sur l'action", () => {
+    /* `hitData` n'est PAS sur le play : il est accroche au playEvent du
+       lancer mis en jeu. Le chercher au mauvais niveau rendait une liste
+       vide sans la moindre erreur. */
+    const c = A.circuitsDuMatch({ allPlays: [coup()] }, match);
+    assert.equal(c.length, 1);
+    assert.equal(c[0].ev, 105);
+    assert.equal(c[0].dist, 411);
+    assert.ok(Math.abs(c[0].spray - 13.1) < 0.2);
+  });
+
+  test("seuls les circuits sont retenus", () => {
+    const autres = [
+      coup({ result: { eventType: "single" } }),
+      coup({ result: { eventType: "strikeout" } }),
+    ];
+    assert.equal(A.circuitsDuMatch({ allPlays: autres }, match).length, 0);
+  });
+
+  test("un circuit sans mesure est écarté plutôt que deviné", () => {
+    // Sans vitesse ni angle, il n'y a pas de trajectoire : une courbe
+    // inventee n'aurait rien a faire dans une vue qui montre des mesures.
+    for (const sans of [
+      coup({ playEvents: [] }),
+      coup({ playEvents: [{ hitData: { launchSpeed: 105 } }] }),
+      coup({ playEvents: [{ hitData: { launchSpeed: 105, launchAngle: 30, totalDistance: 411 } }] }),
+    ])
+      assert.equal(A.circuitsDuMatch({ allPlays: [sans] }, match).length, 0);
+  });
+
+  test("le circuit est porté au compte de la bonne équipe", () => {
+    // Manche haute : c'est l'equipe qui se deplace qui frappe.
+    const haut = A.circuitsDuMatch({ allPlays: [coup({ about: { halfInning: "top" } })] }, match);
+    assert.equal(haut[0].idEquipe, 147);
+    const bas = A.circuitsDuMatch({ allPlays: [coup({ about: { halfInning: "bottom" } })] }, match);
+    assert.equal(bas[0].idEquipe, 119);
+  });
+
+  test("une réponse vide ou cabossée ne lève pas", () => {
+    for (const x of [null, {}, { allPlays: null }, { allPlays: [{}] }])
+      assert.deepEqual(A.circuitsDuMatch(x, match), []);
+  });
+
+  test("le filtre de champs demande ce que l'extraction lit", () => {
+    for (const champ of ["launchSpeed", "launchAngle", "totalDistance", "coordX", "coordY",
+                         "playEvents", "hitData", "eventType", "halfInning", "batter"])
+      assert.match(A.CHAMPS_CIRCUITS, new RegExp(`\\b${champ}\\b`), `champ ${champ} non demandé`);
+  });
+});
