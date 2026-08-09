@@ -4,6 +4,9 @@ import { CONCEPTS, BY_ID } from "./donnees/notions.js";
 import { CONTOUR_US, CARTE_L, CARTE_H, projeter } from "./donnees/carte.js";
 import { WIKI_STADES, AFFICHES } from "./donnees/stades.js";
 import { traduireAction } from "./donnees/traduction.js";
+import {
+  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, ROTATION_MAX,
+} from "./donnees/balistique.js";
 
 /* ------------------------------------------------------------------ *
  *  L'ALMANACH
@@ -4828,6 +4831,430 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
 }
 
 /* ================================================================== *
+ *  VUE « LES CIRCUITS »
+ *  Un circuit est la seule action de baseball dont on connaisse la
+ *  trajectoire de bout en bout : l'API publie la vitesse de sortie,
+ *  l'angle d'envol, la distance et le point de chute. Assez pour
+ *  redessiner le vol, et pour repondre a la question qu'on se pose
+ *  toujours devant un circuit — « il est parti ou, exactement ? ».
+ *
+ *  Le moteur 3D n'est PAS charge avec l'application : 143 Ko de gzip
+ *  pour un onglet qu'on n'ouvre pas tous les jours, ce serait plus lourd
+ *  que tout le reste du site reuni. Il arrive par `import()` au moment ou
+ *  cet onglet s'affiche, et Vite le range dans son propre morceau.
+ * ================================================================== */
+
+/* Le filtre `fields` fait tomber un play-by-play de 610 Ko a 32. C'est ce
+   qui rend l'option « toute la nuit » — une quinzaine de matchs —
+   envisageable au lieu d'etre absurde. */
+const CHAMPS_CIRCUITS =
+  "allPlays,result,eventType,description,rbi,about,inning,halfInning," +
+  "matchup,batter,id,fullName,playEvents,hitData,launchSpeed,launchAngle," +
+  "totalDistance,coordinates,coordX,coordY";
+
+/* Les circuits d'un match, avec ce qu'il faut pour les redessiner. Un
+   circuit sans mesure — cela arrive, surtout hors des grands parcs — est
+   ecarte : sans vitesse ni angle, il n'y a pas de trajectoire a calculer,
+   et une courbe inventee n'aurait rien a faire dans cette vue. */
+function circuitsDuMatch(pbp, match) {
+  const out = [];
+  for (const p of pbp?.allPlays || []) {
+    if (p.result?.eventType !== "home_run") continue;
+    const hd = (p.playEvents || []).map((e) => e.hitData).find(Boolean);
+    const ev = Number(hd?.launchSpeed);
+    const la = Number(hd?.launchAngle);
+    const dist = Number(hd?.totalDistance);
+    const spray = sprayDepuisCoords(Number(hd?.coordinates?.coordX), Number(hd?.coordinates?.coordY));
+    if (!Number.isFinite(ev) || !Number.isFinite(la) || !Number.isFinite(dist) || spray == null) continue;
+    const haut = p.about?.halfInning === "top";
+    out.push({
+      cle: `${match.id}-${p.about?.inning}-${p.about?.halfInning}-${p.matchup?.batter?.id}`,
+      idMatch: match.id,
+      idStade: match.idStade,
+      frappeur: p.matchup?.batter?.fullName || "?",
+      idFrappeur: p.matchup?.batter?.id,
+      // Au tour des visiteurs, c'est un joueur de l'equipe exterieure.
+      idEquipe: haut ? match.idExt : match.idDom,
+      manche: p.about?.inning,
+      haut,
+      points: p.result?.rbi || 1,
+      ev, la, spray, dist,
+    });
+  }
+  return out;
+}
+
+function VueCircuits({ teams, suivies = [], stades = {} }) {
+  const premiere = () => suivies[0] || 119;
+  const [teamId, setTeamId] = useState(premiere);
+  const [choisiAlaMain, setChoisiAlaMain] = useState(false);
+  const [suiviesVues, setSuiviesVues] = useState(suivies[0]);
+  if (suivies[0] !== suiviesVues) {
+    setSuiviesVues(suivies[0]);
+    if (!choisiAlaMain && suivies[0]) setTeamId(suivies[0]);
+  }
+  const choisirEquipe = (id) => { setChoisiAlaMain(true); setTeamId(id); };
+
+  const [toute, setToute] = useState(false);   // ce match | toute la nuit
+  const [brut, setBrut] = useState([]);
+  const [phase, setPhase] = useState("load");  // load | ok | vide | erreur
+  const [erreur, setErreur] = useState("");
+  const [avance, setAvance] = useState({ fait: 0, total: 0 });
+  const [ouvert, setOuvert] = useState(null);  // cle du circuit selectionne
+  const [nuitMontree, setNuitMontree] = useState(null);
+
+  const demande = useRef(0);
+  useEffect(() => () => { demande.current = -1; }, []);
+
+  const charger = useCallback(async (tid, nuitEntiere) => {
+    const mienne = ++demande.current;
+    setPhase("load");
+    setErreur("");
+    setAvance({ fait: 0, total: 0 });
+    setOuvert(null);
+    try {
+      /* Les matchs a depouiller. « Ce match » remonte jusqu'a douze jours
+         en arriere, comme le carnet : hors saison ou apres une pause, le
+         dernier match de l'equipe peut etre loin. */
+      const nuit = nuitCourante();
+      const sch = nuitEntiere
+        ? await jsonMlb(
+            `${API}/schedule?sportId=1&startDate=${decalerJour(nuit, -1)}&endDate=${decalerJour(nuit, 1)}` +
+              `&fields=dates,games,gamePk,gameDate,status,codedGameState,abstractGameState,teams,home,away,team,id,venue,id`
+          )
+        : await jsonMlb(
+            `${API}/schedule?sportId=1&teamId=${tid}` +
+              `&startDate=${jourParis(new Date(Date.now() - 12 * 864e5))}&endDate=${jourParis()}` +
+              `&fields=dates,games,gamePk,gameDate,status,codedGameState,abstractGameState,teams,home,away,team,id,venue,id`
+          );
+
+      const tous = (sch.dates || [])
+        .flatMap((d) => d.games || [])
+        .filter((g) => classerMatch(g.status).fini)
+        .map((g) => ({
+          id: g.gamePk,
+          debut: g.gameDate,
+          idStade: g.venue?.id,
+          idExt: g.teams.away.team.id,
+          idDom: g.teams.home.team.id,
+          ext: g.teams.away.team.abbreviation,
+          dom: g.teams.home.team.abbreviation,
+        }));
+
+      /* « Toute la nuit » veut dire la derniere nuit ACHEVEE. A une heure du
+         matin, celle qui commence n'a pas encore livre une seule feuille de
+         match : demander « les circuits de cette nuit » a ce moment-la ne
+         renvoyait rien du tout. On prend donc la nuit la plus recente qui
+         ait au moins un match termine — souvent la veille, et la nuit en
+         cours des qu'elle a produit quelque chose. */
+      const parNuit = new Map();
+      for (const g of tous) {
+        const n = nuitDe(g.debut).jour;
+        if (!parNuit.has(n)) parNuit.set(n, []);
+        parNuit.get(n).push(g);
+      }
+      const nuitMontree = [...parNuit.keys()].filter((n) => n <= nuit).sort().pop() || null;
+      const cibles = nuitEntiere
+        ? parNuit.get(nuitMontree) || []
+        : tous.sort((a, b) => new Date(b.debut) - new Date(a.debut)).slice(0, 1);
+      if (demande.current === mienne) setNuitMontree(nuitEntiere ? nuitMontree : null);
+
+      if (!cibles.length) {
+        if (demande.current !== mienne) return;
+        setBrut([]);
+        setPhase("vide");
+        return;
+      }
+
+      setAvance({ fait: 0, total: cibles.length });
+      const trouves = [];
+      /* En serie et non en parallele : quinze requetes lancees d'un coup
+         font tousser l'API, et la barre d'avancement n'aurait rien a dire.
+         Un match manquant ne fait pas tomber les autres. */
+      for (const m of cibles) {
+        if (demande.current !== mienne) return;
+        try {
+          const pbp = await jsonMlb(`${API}/game/${m.id}/playByPlay?fields=${CHAMPS_CIRCUITS}`);
+          trouves.push(...circuitsDuMatch(pbp, m));
+        } catch {
+          /* ce match restera absent, les autres valent mieux que rien */
+        }
+        if (demande.current !== mienne) return;
+        setAvance((a) => ({ ...a, fait: a.fait + 1 }));
+      }
+
+      if (demande.current !== mienne) return;
+      trouves.sort((a, b) => a.idMatch - b.idMatch || a.manche - b.manche);
+      setBrut(trouves);
+      setPhase(trouves.length ? "ok" : "vide");
+    } catch (e) {
+      if (demande.current !== mienne) return;
+      setErreur(String(e?.message || e));
+      setPhase("erreur");
+    }
+  }, []);
+
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    charger(teamId, toute);
+  }, [teamId, toute, charger]);
+
+  /* Le calcul balistique : une dizaine de millisecondes par circuit, une
+     seule fois, et jamais pendant le rendu. */
+  const circuits = useMemo(
+    () =>
+      brut.map((c) => {
+        const rotation = ajusterRotation(c.ev, c.la, c.spray, c.dist);
+        const vol = simuler(c.ev, c.la, c.spray, rotation);
+        return {
+          ...c,
+          rotation: Math.round(rotation),
+          sature: rotation >= ROTATION_MAX - 10,
+          apex: Math.round(vol.apex),
+          duree: vol.vol,
+          // Un point sur quatre : l'oeil n'y voit rien, la carte graphique si.
+          points: vol.points.filter((_, i) => i % 4 === 0).map((q) => q.map((x) => x / 0.3048)),
+        };
+      }),
+    [brut]
+  );
+
+  const parEquipe = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
+  /* Le parc : celui du match quand on n'en regarde qu'un, sinon rien de
+     commun a dessiner — quinze matchs, quinze murs differents. Le trace lui
+     meme vit dans le morceau charge a la demande : c'est la scene qui choisit
+     entre le contour reel et la cloture interpolee, et qui dit lequel. */
+  const idStade = !toute && circuits.length ? circuits[0].idStade : null;
+  const stade = idStade ? stades[idStade] : null;
+  const [parc, setParc] = useState(null);
+
+  return (
+    <div className="alm-rise">
+      <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 16px" }}>
+        Un circuit est la seule action dont on connaisse le vol de bout en bout : la ligue publie la
+        vitesse de sortie, l'angle d'envol, la distance et le point de chute. Le reste — la courbe
+        entre les deux — se calcule. Touche un circuit pour le suivre.
+      </p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {[[false, "Ce match"], [true, "Toute la nuit"]].map(([v, lib]) => (
+          <button
+            key={String(v)}
+            className="alm-btn"
+            onClick={() => setToute(v)}
+            aria-pressed={toute === v}
+            style={btnStyle(toute === v)}
+          >
+            {lib}
+          </button>
+        ))}
+      </div>
+
+      {!toute && (
+        <ChoixEquipe
+          id="eq-circuits"
+          libelle="L'ÉQUIPE"
+          teams={teams}
+          suivies={suivies}
+          valeur={teamId}
+          onChange={choisirEquipe}
+        />
+      )}
+
+      {toute && nuitMontree && phase === "ok" && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, margin: "0 0 12px" }}>
+          Nuit du {libelleNuit(nuitMontree).soir} au {libelleNuit(nuitMontree).matin} ·{" "}
+          {circuits.length} circuit{circuits.length > 1 ? "s" : ""} mesuré
+          {circuits.length > 1 ? "s" : ""}
+        </p>
+      )}
+
+      {phase === "load" && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 12, color: T.dim, animation: "pulse 1.4s infinite" }}>
+          {avance.total > 1
+            ? `Dépouillement des feuilles de match — ${avance.fait} sur ${avance.total}…`
+            : "Dépouillement de la feuille de match…"}
+        </p>
+      )}
+
+      {phase === "erreur" && (
+        <div style={{ border: `1px solid ${T.clay}`, padding: 18, borderRadius: 3 }}>
+          <p style={{ margin: 0, fontSize: 15 }}>Les trajectoires ne sont pas arrivées.</p>
+          <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim, margin: "8px 0 14px" }}>{erreur}</p>
+          <button className="alm-btn" onClick={() => charger(teamId, toute)} style={btnStyle(true)}>
+            Réessayer
+          </button>
+        </div>
+      )}
+
+      {phase === "vide" && (
+        <p style={{ fontSize: 16 }}>
+          {toute
+            ? "Aucun circuit mesuré cette nuit — ou la nuit n'a pas encore livré ses feuilles de match."
+            : "Aucun circuit mesuré dans le dernier match de cette équipe. Essaie une autre équipe, ou toute la nuit."}
+        </p>
+      )}
+
+      {phase === "ok" && (
+        <>
+          <SceneCircuits
+            circuits={circuits}
+            idStade={idStade}
+            distances={stade}
+            ouvert={ouvert}
+            onParc={setParc}
+          />
+
+          <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
+            {circuits.map((c) => {
+              const eq = parEquipe[c.idEquipe];
+              const sel = ouvert === c.cle;
+              return (
+                <button
+                  key={c.cle}
+                  onClick={() => setOuvert(sel ? null : c.cle)}
+                  aria-pressed={sel}
+                  style={{
+                    all: "unset", cursor: "pointer", boxSizing: "border-box",
+                    display: "flex", alignItems: "center", gap: 10, minWidth: 0,
+                    background: sel ? "rgba(242,206,107,.12)" : "rgba(11,36,26,.55)",
+                    border: `1px solid ${sel ? T.sodium : "rgba(239,243,234,.16)"}`,
+                    borderRadius: 3, padding: "9px 11px",
+                  }}
+                >
+                  <Img src={PORTRAIT(c.idFrappeur)} alt="" size={38} rond
+                    style={{ background: "rgba(239,243,234,.09)" }} />
+                  <span style={{ minWidth: 0, flex: 1 }}>
+                    <span style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 14.5, color: T.chalk }}>{c.frappeur}</span>
+                      <span style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim }}>
+                        {eq?.abbreviation || ""} · {ordinal(c.manche)} {c.haut ? "haut" : "bas"}
+                        {c.points > 1 ? ` · ${c.points} points` : ""}
+                      </span>
+                    </span>
+                    <span
+                      style={{
+                        display: "block", fontFamily: FF_MONO, fontSize: 10,
+                        color: sel ? T.sodium : T.dim, marginTop: 3,
+                      }}
+                    >
+                      {Math.round(c.dist)} pi · {Math.round(c.ev)} mph · {Math.round(c.la)}° ·
+                      apex ~{c.apex} pi
+                      {c.sature ? " · vent arrière probable" : ""}
+                    </span>
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, lineHeight: 1.7, marginTop: 14 }}>
+            <strong>Mesuré</strong> : la vitesse de sortie, l'angle d'envol, la distance et le point
+            de chute. <strong>Calculé</strong> : la courbe qui relie les deux — traînée et effet
+            Magnus, intégrés pas à pas. La rotation de la balle n'est pas publiée : on retient celle
+            qui fait retomber la balle à la distance annoncée, ce qui absorbe aussi le vent. L'apex
+            et le temps de vol sont donc des estimations, pas des mesures.
+            {parc?.qualite === "trace" ? (
+              <>
+                <br />
+                Le contour du parc est le <strong>tracé réel</strong>, relevé sur les plans de
+                Baseball Savant (jeu de données GeomMLBStadiums, de Ben Dilday, sous licence MIT) :
+                les creux des allées et les coins près des poteaux sont ceux du stade. Son échelle
+                est calée sur les trois distances peintes sur les clôtures, marquées ci-dessus.
+              </>
+            ) : parc?.qualite === "interpole" ? (
+              <>
+                <br />
+                Ce parc n'est pas couvert par le relevé : le mur est <strong>interpolé</strong> à
+                partir des trois distances publiées. Il est juste là où elles sont marquées, deviné
+                ailleurs.
+              </>
+            ) : null}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* Le conteneur de la scene : c'est lui qui va chercher le moteur 3D, et
+   c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
+   n'execute pas les effets, donc rien de tout cela ne part en cascade dans
+   les tests ou dans une prerendue. */
+function SceneCircuits({ circuits, idStade, distances, ouvert, onParc }) {
+  const boite = useRef(null);
+  const poignee = useRef(null);
+  const [etat, setEtat] = useState("attente"); // attente | prete | refus
+  const doux = useRef(true);
+
+  useEffect(() => {
+    let vivant = true;
+    const el = boite.current;
+    if (!el || !circuits.length) return undefined;
+    doux.current = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    import("./scene-circuits.js")
+      .then(({ monterScene }) => {
+        if (!vivant || !boite.current) return;
+        poignee.current = monterScene(boite.current, {
+          circuits: circuits.map((c) => ({ points: c.points, couleur: c.sature ? 0xc2603a : 0xf2ce6b })),
+          idStade,
+          distances,
+          animer: doux.current,
+        });
+        setEtat("prete");
+        onParc?.(poignee.current.parc);
+      })
+      .catch(() => vivant && setEtat("refus"));
+    return () => {
+      vivant = false;
+      poignee.current?.detruire();
+      poignee.current = null;
+    };
+  }, [circuits, idStade, distances, onParc]);
+
+  useEffect(() => {
+    const i = circuits.findIndex((c) => c.cle === ouvert);
+    poignee.current?.choisir(i, circuits[i]?.duree);
+  }, [ouvert, circuits, etat]);
+
+  useEffect(() => {
+    const surTaille = () => poignee.current?.redimensionner();
+    window.addEventListener("resize", surTaille);
+    return () => window.removeEventListener("resize", surTaille);
+  }, []);
+
+  return (
+    <div>
+      <div
+        ref={boite}
+        style={{
+          width: "100%", height: "min(58vh, 420px)", borderRadius: 3,
+          border: "1px solid rgba(239,243,234,.16)", overflow: "hidden",
+          background: T.night, position: "relative",
+        }}
+      >
+        {etat !== "prete" && (
+          <p
+            style={{
+              position: "absolute", inset: 0, display: "flex", alignItems: "center",
+              justifyContent: "center", margin: 0, padding: 16, textAlign: "center",
+              fontFamily: FF_MONO, fontSize: 11, color: T.dim,
+            }}
+          >
+            {etat === "refus"
+              ? "La vue en trois dimensions n'a pas pu se charger. Les mesures restent lisibles ci-dessous."
+              : "Chargement de la vue en trois dimensions…"}
+          </p>
+        )}
+      </div>
+      <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, margin: "6px 0 0" }}>
+        Glisser pour tourner autour du terrain · molette ou pincement pour approcher
+      </p>
+    </div>
+  );
+}
+
+/* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
 /* ------------------------------------------------------------------ *
@@ -4842,11 +5269,12 @@ const ALIAS = {
   carnet: "carnet", almanach: "carnet", notions: "carnet",
   terrains: "terrains", stades: "terrains", parcs: "terrains", carte: "terrains",
   equipes: "equipes", equipe: "equipes", effectif: "equipes", roster: "equipes", joueurs: "equipes",
+  circuits: "circuits", hr: "circuits", "home-runs": "circuits", homeruns: "circuits",
   direct: "direct", live: "direct", "en-cours": "direct",
 };
 const FRAGMENT = {
   nuits: "programme", carnet: "carnet", terrains: "terrains",
-  equipes: "equipes", direct: "direct",
+  equipes: "equipes", circuits: "circuits", direct: "direct",
 };
 
 /* Ce que porte l'onglet du navigateur, et donc l'entree d'historique. */
@@ -4855,6 +5283,7 @@ const TITRE_ONGLET = {
   nuits: "Le programme",
   terrains: "Les terrains",
   equipes: "Les équipes",
+  circuits: "Les circuits",
   direct: "Le direct",
 };
 
@@ -5497,6 +5926,7 @@ ${POLICES}
             ["nuits", "Le programme"],
             ["terrains", "Les terrains"],
             ["equipes", "Les équipes"],
+            ["circuits", "Les circuits"],
             ["direct", "Le direct"],
           ].map(([id, libelle]) => (
             <Onglet key={id} id={id} actif={onglet === id} onChoisir={changerOnglet}>
@@ -5542,6 +5972,8 @@ ${POLICES}
             suivies={suivies}
             cible={cible}
           />
+        ) : onglet === "circuits" ? (
+          <VueCircuits teams={teams} suivies={suivies} stades={stades} />
         ) : onglet === "equipes" ? (
           <VueEquipes
             teams={teams}
@@ -5630,6 +6062,9 @@ export {
   // vue « les equipes »
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
   GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
+  // vue « les circuits »
+  VueCircuits, SceneCircuits, circuitsDuMatch, CHAMPS_CIRCUITS,
+  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, ROTATION_MAX,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »

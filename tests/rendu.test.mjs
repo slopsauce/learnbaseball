@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -470,7 +470,8 @@ describe("garde-fous d'accessibilité", () => {
   test("le titre de la page distingue les onglets", () => {
     // Cinq entrees d'historique portaient le meme libelle.
     const t = new Set(Object.values(A_TITRES));
-    assert.equal(t.size, 5, "chaque onglet doit avoir son propre titre");
+    assert.equal(t.size, Object.keys(A_TITRES).length, "chaque onglet doit avoir son propre titre");
+    assert.ok(t.size >= 6, "un onglet a-t-il été ajouté sans titre ?");
   });
 });
 
@@ -504,5 +505,34 @@ describe("traduction affichée", () => {
     const html = rendre(React.createElement(Action, { texte: brut }));
     assert.match(html, /neutron flow/);
     assert.doesNotMatch(html, /<button/, "proposer « VO » sur de l'anglais n'aurait aucun sens");
+  });
+});
+
+describe("rendu de la vue Circuits", () => {
+  test("se rend sans données ni navigateur", () => {
+    /* Le moteur 3D n'est charge que par un effet, et les effets ne tournent
+       pas au rendu serveur : cette vue doit donc s'afficher entierement sans
+       WebGL, sans canvas, et sans que `three` soit meme telecharge. */
+    const html = rendre(React.createElement(VueCircuits, { teams: [equipe], suivies: [119] }));
+    assert.match(html, /Ce match/);
+    assert.match(html, /Toute la nuit/);
+    assert.doesNotMatch(html, /<canvas/, "aucun canvas au rendu serveur");
+  });
+
+  test("le conteneur de la scène s'affiche avant le moteur 3D", () => {
+    // Ce qu'on voit pendant que les 141 Ko arrivent : un cadre et un mot,
+    // pas un trou blanc.
+    const html = rendre(React.createElement(SceneCircuits, {
+      circuits: [], mur: null, marques: [], ouvert: null,
+    }));
+    assert.match(html, /Chargement de la vue en trois dimensions/);
+    assert.match(html, /Glisser pour tourner/);
+  });
+
+  test("l'onglet annonce ce qui est mesuré et ce qui est calculé", () => {
+    // La vue montre une courbe que personne n'a filmee : elle doit dire
+    // lesquels de ses chiffres sont des mesures.
+    const html = rendre(React.createElement(VueCircuits, { teams: [equipe], suivies: [119] }));
+    assert.match(html, /le vol de bout en bout/);
   });
 });
