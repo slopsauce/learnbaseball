@@ -104,8 +104,27 @@ export function simuler(vitesseMph, angleDeg, sprayDeg, rotationTrMin, dt = 0.00
     distance: Math.hypot(fin[0], fin[1]) * PI_PAR_M,          // pieds
     apex: Math.max(...points.map((q) => q[2])) * PI_PAR_M,    // pieds
     vol: (points.length - 1) * dt,                            // secondes
+    // La vitesse au moment de retomber : `v` est le vecteur vitesse a la
+    // derniere iteration, donc rien a estimer.
+    vitesseFinale: Math.hypot(v[0], v[1], v[2]) / MPH_PAR_MS, // mph
   };
 }
+
+/* ------------------------------------------------------------------ *
+ *  L'ENERGIE
+ *  Une demi-masse fois le carre de la vitesse, rien de plus. Mais c'est
+ *  le chiffre qui rend la difference entre 95 et 110 mph palpable : elle
+ *  n'est pas de 16 %, elle est de 45 %, parce que l'energie va comme le
+ *  CARRE de la vitesse. Un frappeur qui gagne cinq milles a l'heure ne
+ *  gagne pas cinq pour cent.
+ *
+ *  L'autre lecture est en vol : la balle repart avec cent soixante
+ *  joules et se pose avec cinquante. L'air en prend les deux tiers — et
+ *  c'est aussi pour cela qu'une balle frappee a Denver, ou l'air est
+ *  plus fin, va plus loin.
+ * ------------------------------------------------------------------ */
+export const energie = (vitesseMph) =>
+  0.5 * MASSE * (vitesseMph * MPH_PAR_MS) ** 2;   // joules
 
 export const ROTATION_MAX = 4500;
 
