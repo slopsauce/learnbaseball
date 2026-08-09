@@ -1,0 +1,65 @@
+Le trace des trente parcs
+=========================
+
+`stades-traces.js` est derive de GeomMLBStadiums, de Ben Dilday, qui a
+extrait les contours des plans SVG publies par Baseball Savant :
+
+  https://github.com/bdilday/GeomMLBStadiums
+  MIT License — Copyright (c) 2018 Ben Dilday
+
+Texte de la licence MIT, tel que distribue avec le jeu de donnees :
+
+  Permission is hereby granted, free of charge, to any person obtaining a
+  copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be included
+  in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+  OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+  CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+  TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+  SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+L'attribution figure aussi a l'ecran, sous la vue des circuits : c'est la
+que quelqu'un se demande d'ou vient le dessin.
+
+Ce qui a ete fait au jeu de donnees d'origine
+---------------------------------------------
+
+  - Deux segments retenus sur six : `outfield_outer` (le mur) et
+    `outfield_inner` (le bord interieur de la piste d'avertissement).
+    Les quatre autres — lignes de faute, avant-champ, marbre — sont
+    reconstruits geometriquement, parce qu'ils sont les memes partout :
+    le reglement fixe les 90 pieds entre les buts.
+
+  - Coordonnees ramenees au marbre, en unites de feuille de match, le
+    meme repere que les points de chute publies par l'API.
+
+  - Simplification de Douglas-Peucker a 0,15 unite, soit 0,4 pied :
+    3 301 points deviennent 1 211, et le fichier tient en 8 Ko de gzip.
+    Ce n'est pas un reechantillonnage — l'algorithme conserve un
+    sous-ensemble des sommets d'origine, ceux qui portent les angles, et
+    ne jette que les points situes a moins de 0,4 pied de la corde entre
+    leurs voisins. Les creux des allees et les coins pres des poteaux
+    sont donc ceux du releve.
+
+  - Indexation par identifiant de STADE, et non par equipe. Le releve
+    date de 2018 : les Athletics ont quitte le Coliseum et les Rangers
+    Globe Life Park depuis. Recaler l'ancien parc sur les distances du
+    nouveau passait tous les controles — moins de 3 % d'ecart — en
+    dessinant le mauvais stade. Ces deux parcs n'ont donc pas de trace et
+    retombent sur la cloture interpolee, et toute equipe qui demenagera
+    fera de meme sans qu'on ait a y penser.
+
+L'echelle, elle, n'est pas figee dans le fichier : elle est calee a
+l'execution sur les trois distances de clotures que publie l'API. La
+forme vient du releve, la taille des nombres mesures — un parc dont on
+repeint les clotures se recale donc tout seul.

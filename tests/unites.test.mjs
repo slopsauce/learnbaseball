@@ -1965,3 +1965,68 @@ describe("extraction des circuits", () => {
       assert.match(A.CHAMPS_CIRCUITS, new RegExp(`\\b${champ}\\b`), `champ ${champ} non demandé`);
   });
 });
+
+/* Le jeu de donnees part avec la scene 3D, dans le morceau charge a la
+   demande : on l'importe directement, sans passer par le paquet principal. */
+const { TRACES } = await import("../src/donnees/stades-traces.js");
+
+describe("le tracé des parcs", () => {
+
+  test("les trente parcs du relevé sont là", () => {
+    assert.equal(Object.keys(TRACES).length, 30);
+    for (const [id, t] of Object.entries(TRACES)) {
+      assert.ok(Number(id) > 0, `clé de stade invalide : ${id}`);
+      /* Six points suffisent a un mur : la simplification garantit 0,4 pied
+         d'ecart, et certains parcs sont presque polygonaux. C'est la
+         couverture angulaire, testee plus bas, qui dit si l'arc est complet —
+         pas le nombre de sommets. */
+      assert.ok(t.m.length >= 12 && t.m.length % 2 === 0, `mur mal formé : ${t.n} (${t.m.length / 2} points)`);
+      assert.equal(t.p.length % 2, 0, `piste mal formée : ${t.n}`);
+    }
+  });
+
+  test("l'indexation est par stade, jamais par équipe", () => {
+    /* Le releve date de 2018. Les Athletics ont quitte le Coliseum et les
+       Rangers Globe Life Park : recaler l'ancien parc sur les distances du
+       nouveau passait tous les controles en dessinant le mauvais stade.
+       Ces deux stades-la ne doivent PAS avoir de trace. */
+    const parNom = Object.fromEntries(Object.values(TRACES).map((t) => [t.n, true]));
+    assert.ok(parNom["Oakland Coliseum"], "le Coliseum, lui, était bien relevé en 2018");
+    assert.ok(parNom["Globe Life Park in Arlington"], "Globe Life Park aussi");
+    for (const nouveau of ["Sutter Health Park", "Globe Life Field"])
+      assert.ok(!parNom[nouveau], `${nouveau} n'existait pas en 2018 : il ne peut pas avoir de tracé`);
+  });
+
+  test("le contour tient dans un terrain de baseball", () => {
+    // Un mur entre 250 et 500 pieds une fois mis a l'echelle : au-dela, c'est
+    // que le repere ou l'unite ont bouge.
+    const ECHELLE = 2.45; // pieds par unite, ordre de grandeur du releve
+    for (const t of Object.values(TRACES)) {
+      const rayons = [];
+      for (let i = 0; i < t.m.length; i += 2) {
+        const [x, y] = [t.m[i], t.m[i + 1]];
+        if (y > 40) rayons.push(Math.hypot(x, y) * ECHELLE);
+      }
+      const max = Math.max(...rayons);
+      assert.ok(max > 250 && max < 560, `${t.n} : rayon maximal ${max.toFixed(0)} pi`);
+    }
+  });
+
+  test("l'arc va d'un poteau à l'autre, sans jamais revenir en arrière", () => {
+    /* Le releve d'origine est une boucle FERMEE de tout le terrain. En
+       couper l'arc du champ exterieur sans precaution laissait ses deux
+       extremites jointes : le ruban dessinait alors un mur en travers du
+       terrain, juste devant le marbre — et ca se voyait a l'ecran sans que
+       rien ne le signale. Un arc valide progresse en angle, point apres
+       point, du poteau gauche au poteau droit. */
+    for (const t of Object.values(TRACES)) {
+      const ang = [];
+      for (let i = 0; i < t.m.length; i += 2) ang.push(Math.atan2(t.m[i], t.m[i + 1]) * (180 / Math.PI));
+      for (let i = 0; i < ang.length - 1; i++)
+        assert.ok(ang[i + 1] > ang[i],
+          `${t.n} : le tracé revient en arrière à ${ang[i].toFixed(1)}° → ${ang[i + 1].toFixed(1)}°`);
+      assert.ok(ang[0] < -40 && ang[ang.length - 1] > 40,
+        `${t.n} : l'arc ne couvre pas les deux lignes de faute (${ang[0].toFixed(0)}° → ${ang[ang.length - 1].toFixed(0)}°)`);
+    }
+  });
+});

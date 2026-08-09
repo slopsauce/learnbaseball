@@ -19,7 +19,55 @@ import {
   HemisphereLight, DirectionalLight, DoubleSide, Clock,
 } from "three";
 
-import { HAUTEUR_MUR } from "./donnees/balistique.js";
+import { HAUTEUR_MUR, murDuParc } from "./donnees/balistique.js";
+import { TRACES } from "./donnees/stades-traces.js";
+
+/* ------------------------------------------------------------------ *
+ *  LE MUR DU PARC
+ *  Deux qualites, et l'ecran dit toujours laquelle il montre :
+ *   - « trace » : le contour reel, releve sur les SVG de Baseball
+ *     Savant. La forme vient de la, la TAILLE est calee sur les trois
+ *     distances publiees — moindres carres sur les rayons a −45, 0 et
+ *     +45 degres. Un parc dont on a repeint les clotures depuis 2018 se
+ *     recale donc tout seul, sans qu'on touche au jeu de donnees.
+ *   - « interpole » : la parabole a travers ces trois nombres, pour les
+ *     deux parcs que le releve de 2018 ne couvre pas.
+ * ------------------------------------------------------------------ */
+const paires = (plat) => {
+  const out = [];
+  for (let i = 0; i < plat.length; i += 2) out.push([plat[i], plat[i + 1]]);
+  return out;
+};
+
+function construireMur(idStade, distances) {
+  const t = TRACES[idStade];
+  if (t && distances) {
+    const mur = paires(t.m);
+    const rayonA = (pts, aDeg) => {
+      const a = (aDeg * Math.PI) / 180;
+      let best = Infinity, r = 0;
+      for (const [x, y] of pts) {
+        const d = Math.abs(Math.atan2(x, y) - a);
+        if (d < best) { best = d; r = Math.hypot(x, y); }
+      }
+      return r;
+    };
+    const rs = [rayonA(mur, -45), rayonA(mur, 0), rayonA(mur, 45)];
+    const pub = [Number(distances.gauche), Number(distances.centre), Number(distances.droite)];
+    if (rs.every((x) => x > 1) && pub.every((x) => Number.isFinite(x) && x > 100)) {
+      // Echelle par moindres carres : une seule inconnue, trois mesures.
+      const k = rs.reduce((s, r, i) => s + r * pub[i], 0) / rs.reduce((s, r) => s + r * r, 0);
+      return {
+        qualite: "trace",
+        nom: t.n,
+        mur: mur.map(([x, y]) => [x * k, y * k]),
+        piste: t.p.length ? paires(t.p).map(([x, y]) => [x * k, y * k]) : null,
+      };
+    }
+  }
+  const repli = distances ? murDuParc(distances) : null;
+  return repli ? { qualite: "interpole", mur: repli, piste: null } : { qualite: "aucun", mur: null, piste: null };
+}
 
 /* La palette de l'application, en nombres. Le gazon et la terre battue
    sont ceux du reste du site ; le ciel est le seul ajout, parce qu'un
@@ -64,13 +112,48 @@ function etiquette(texte, couleur = "#eff3ea") {
   return sp;
 }
 
+/* Ruban au sol entre deux polylignes : la piste d'avertissement. Les deux
+   traces n'ont pas le meme nombre de points — ils viennent de deux chemins
+   SVG distincts — donc on les apparie par l'ANGLE de spray, seule grandeur
+   qu'ils partagent. */
+function rubanSol(interieur, exterieur, h, couleur) {
+  const angleDe = ([x, y]) => Math.atan2(x, y);
+  const surLigne = (pts, a) => {
+    const P = pts.map((p) => ({ t: angleDe(p), p })).sort((u, v) => u.t - v.t);
+    if (a <= P[0].t) return P[0].p;
+    for (let i = 0; i < P.length - 1; i++) {
+      if (a >= P[i].t && a <= P[i + 1].t) {
+        const u = (a - P[i].t) / (P[i + 1].t - P[i].t || 1);
+        return [P[i].p[0] + u * (P[i + 1].p[0] - P[i].p[0]), P[i].p[1] + u * (P[i + 1].p[1] - P[i].p[1])];
+      }
+    }
+    return P[P.length - 1].p;
+  };
+  const pos = [], idx = [];
+  const N = 72;
+  for (let i = 0; i <= N; i++) {
+    const a = (-46 + (92 * i) / N) * (Math.PI / 180);
+    const [xi, yi] = surLigne(interieur, a);
+    const [xe, ye] = surLigne(exterieur, a);
+    pos.push(xi, h, -yi, xe, h, -ye);
+    if (i < N) { const b = 2 * i; idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3); }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute("position", new Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return new Mesh(g, new MeshLambertMaterial({ color: couleur, side: DoubleSide }));
+}
+
 /* ------------------------------------------------------------------ *
  *  MONTAGE
  *  `circuits` : [{ points: [[x,y,z] en pieds], couleur }]
  *  `mur`      : polyligne du parc, en pieds, ou null
  *  Rend une poignee : { choisir, redimensionner, detruire }.
  * ------------------------------------------------------------------ */
-export function monterScene(conteneur, { circuits, mur, marques = [], animer = true }) {
+export function monterScene(conteneur, { circuits, idStade, distances, animer = true }) {
+  const parc = construireMur(idStade, distances);
+  const mur = parc.mur;
   const renderer = new WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(conteneur.clientWidth, conteneur.clientHeight);
@@ -165,6 +248,7 @@ export function monterScene(conteneur, { circuits, mur, marques = [], animer = t
 
   // --- le mur du parc ---
   if (mur) {
+    if (parc.piste) scene.add(rubanSol(parc.piste, mur, 0.25, TERRE));
     scene.add(ruban(mur, HAUTEUR_MUR, MUR));
     scene.add(new Line(
       new BufferGeometry().setFromPoints(mur.map(([x, y]) => V(x, y, HAUTEUR_MUR + 0.3))),
@@ -172,14 +256,30 @@ export function monterScene(conteneur, { circuits, mur, marques = [], animer = t
     ));
     /* Les trois distances mesurees, la ou elles sont peintes. Elles disent
        aussi, en creux, que le reste du mur est interpole. */
-    marques.forEach(({ angle, texte }) => {
-      const t = (angle * Math.PI) / 180;
-      const i = Math.round(((angle + 45) / 90) * (mur.length - 1));
-      const [x, y] = mur[Math.max(0, Math.min(mur.length - 1, i))];
-      const r = Math.hypot(x, y);
-      const sp = etiquette(texte);
-      sp.position.copy(V(x * (1 - 9 / r), y * (1 - 9 / r), HAUTEUR_MUR * 0.65));
-      sp.userData.angle = t;
+    /* Les trois distances mesurees, posees sur le mur a l'angle ou elles
+       sont peintes. Sur un trace reel elles disent que l'echelle est calee
+       dessus ; sur une cloture interpolee, elles disent ou s'arrete le su. */
+    const marques = distances
+      ? [
+          [-45, distances.gauche],
+          [0, distances.centre],
+          [45, distances.droite],
+        ].filter(([, d]) => Number.isFinite(Number(d)))
+      : [];
+    marques.forEach(([angle, d]) => {
+      const a = (angle * Math.PI) / 180;
+      // Le point du mur le plus proche de cet angle — le trace n'a aucune
+      // raison d'avoir un sommet pile a −45 degres.
+      let best = Infinity, cible = null;
+      for (const [x, y] of mur) {
+        const e = Math.abs(Math.atan2(x, y) - a);
+        if (e < best) { best = e; cible = [x, y]; }
+      }
+      const [x, y] = cible;
+      /* Au-dessus du mur, et non plaquee dessus : sur un trace reel, la
+         cloture passe devant l'etiquette des que la camera tourne un peu. */
+      const sp = etiquette(String(Math.round(Number(d))));
+      sp.position.copy(V(x, y, HAUTEUR_MUR + 9));
       scene.add(sp);
     });
   }
@@ -255,6 +355,7 @@ export function monterScene(conteneur, { circuits, mur, marques = [], animer = t
   tourner();
 
   return {
+    parc: { qualite: parc.qualite, nom: parc.nom || null },
     choisir(i, volSecondes) {
       choisi = i;
       tracés.forEach((tr, k) => { tr.tube.material.opacity = i < 0 || k === i ? 0.92 : 0.12; });

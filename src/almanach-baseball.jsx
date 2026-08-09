@@ -5020,21 +5020,13 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
   );
 
   const parEquipe = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
-  // Le parc : celui du match quand on n'en regarde qu'un, sinon rien de
-  // commun a dessiner — quinze matchs, quinze murs differents.
-  const stade = !toute && circuits.length ? stades[circuits[0].idStade] : null;
-  const mur = useMemo(() => (stade ? murDuParc(stade) : null), [stade]);
-  const marques = useMemo(
-    () =>
-      stade
-        ? [
-            { angle: -44, texte: String(Math.round(stade.gauche)) },
-            { angle: 0, texte: String(Math.round(stade.centre)) },
-            { angle: 44, texte: String(Math.round(stade.droite)) },
-          ]
-        : [],
-    [stade]
-  );
+  /* Le parc : celui du match quand on n'en regarde qu'un, sinon rien de
+     commun a dessiner — quinze matchs, quinze murs differents. Le trace lui
+     meme vit dans le morceau charge a la demande : c'est la scene qui choisit
+     entre le contour reel et la cloture interpolee, et qui dit lequel. */
+  const idStade = !toute && circuits.length ? circuits[0].idStade : null;
+  const stade = idStade ? stades[idStade] : null;
+  const [parc, setParc] = useState(null);
 
   return (
     <div className="alm-rise">
@@ -5105,7 +5097,13 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
 
       {phase === "ok" && (
         <>
-          <SceneCircuits circuits={circuits} mur={mur} marques={marques} ouvert={ouvert} />
+          <SceneCircuits
+            circuits={circuits}
+            idStade={idStade}
+            distances={stade}
+            ouvert={ouvert}
+            onParc={setParc}
+          />
 
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
             {circuits.map((c) => {
@@ -5156,11 +5154,19 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             Magnus, intégrés pas à pas. La rotation de la balle n'est pas publiée : on retient celle
             qui fait retomber la balle à la distance annoncée, ce qui absorbe aussi le vent. L'apex
             et le temps de vol sont donc des estimations, pas des mesures.
-            {mur ? (
+            {parc?.qualite === "trace" ? (
               <>
                 <br />
-                Le mur est reconstruit à partir des trois distances peintes sur les clôtures — les
-                seules que la ligue publie. Il est juste là où elles sont marquées, interpolé
+                Le contour du parc est le <strong>tracé réel</strong>, relevé sur les plans de
+                Baseball Savant (jeu de données GeomMLBStadiums, de Ben Dilday, sous licence MIT) :
+                les creux des allées et les coins près des poteaux sont ceux du stade. Son échelle
+                est calée sur les trois distances peintes sur les clôtures, marquées ci-dessus.
+              </>
+            ) : parc?.qualite === "interpole" ? (
+              <>
+                <br />
+                Ce parc n'est pas couvert par le relevé : le mur est <strong>interpolé</strong> à
+                partir des trois distances publiées. Il est juste là où elles sont marquées, deviné
                 ailleurs.
               </>
             ) : null}
@@ -5175,7 +5181,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
    c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
    n'execute pas les effets, donc rien de tout cela ne part en cascade dans
    les tests ou dans une prerendue. */
-function SceneCircuits({ circuits, mur, marques, ouvert }) {
+function SceneCircuits({ circuits, idStade, distances, ouvert, onParc }) {
   const boite = useRef(null);
   const poignee = useRef(null);
   const [etat, setEtat] = useState("attente"); // attente | prete | refus
@@ -5191,11 +5197,12 @@ function SceneCircuits({ circuits, mur, marques, ouvert }) {
         if (!vivant || !boite.current) return;
         poignee.current = monterScene(boite.current, {
           circuits: circuits.map((c) => ({ points: c.points, couleur: c.sature ? 0xc2603a : 0xf2ce6b })),
-          mur,
-          marques,
+          idStade,
+          distances,
           animer: doux.current,
         });
         setEtat("prete");
+        onParc?.(poignee.current.parc);
       })
       .catch(() => vivant && setEtat("refus"));
     return () => {
@@ -5203,7 +5210,7 @@ function SceneCircuits({ circuits, mur, marques, ouvert }) {
       poignee.current?.detruire();
       poignee.current = null;
     };
-  }, [circuits, mur, marques]);
+  }, [circuits, idStade, distances, onParc]);
 
   useEffect(() => {
     const i = circuits.findIndex((c) => c.cle === ouvert);
