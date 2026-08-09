@@ -5,7 +5,7 @@ import { CONTOUR_US, CARTE_L, CARTE_H, projeter } from "./donnees/carte.js";
 import { WIKI_STADES, AFFICHES } from "./donnees/stades.js";
 import { traduireAction } from "./donnees/traduction.js";
 import {
-  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, ROTATION_MAX,
+  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, energie, ROTATION_MAX,
 } from "./donnees/balistique.js";
 import { couleurEquipe } from "./donnees/couleurs-equipes.js";
 
@@ -4853,6 +4853,15 @@ const CHAMPS_CIRCUITS =
   "matchup,batter,id,fullName,playEvents,playId,hitData,launchSpeed,launchAngle," +
   "totalDistance,coordinates,coordX,coordY";
 
+/* On aimerait aussi la vitesse du lancer, pour montrer que le frappeur ne
+   part pas d'une balle immobile mais en renverse une lancee. Elle coute trop
+   cher : `fields` est une liste plate de NOMS de cles, sans chemin possible —
+   les formes pointees ne renvoient rien du tout, verifie. Ajouter `pitchData`
+   a cote de `coordinates`, indispensable au spray, fait donc entrer le suivi
+   complet de CHAQUE lancer : la reponse passe de 41 a 163 Ko par match, soit
+   deux megaoctets et demi pour une nuit. Le renversement attendra une source
+   moins chere. */
+
 /* Les circuits d'un match, avec ce qu'il faut pour les redessiner. Un
    circuit sans mesure — cela arrive, surtout hors des grands parcs — est
    ecarte : sans vitesse ni angle, il n'y a pas de trajectoire a calculer,
@@ -5020,6 +5029,12 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
           sature: rotation >= ROTATION_MAX - 10,
           apex: Math.round(vol.apex),
           duree: vol.vol,
+          /* L'energie au contact, et celle qui reste au moment de retomber.
+             L'ecart entre les deux est ce que l'air a pris — les deux tiers,
+             sur un circuit ordinaire. */
+          joules: Math.round(energie(c.ev)),
+          joulesArrivee: Math.round(energie(vol.vitesseFinale)),
+          vitesseArrivee: Math.round(vol.vitesseFinale),
           // Un point sur quatre : l'oeil n'y voit rien, la carte graphique si.
           points: vol.points.filter((_, i) => i % 4 === 0).map((q) => q.map((x) => x / 0.3048)),
         };
@@ -5183,6 +5198,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             })}
           </div>
 
+          {ouvert && <BilanEnergie circuit={circuits.find((c) => c.cle === ouvert)} />}
           {ouvert && <ClipCircuit circuit={circuits.find((c) => c.cle === ouvert)} />}
 
           <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, lineHeight: 1.7, marginTop: 14 }}>
@@ -5210,6 +5226,47 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
           </p>
         </>
       )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ *  L'ENERGIE D'UN CIRCUIT
+ *  Trois nombres que la vue calculait deja sans les montrer, et qui
+ *  disent ce qu'un « 105 mph » ne dit pas :
+ *
+ *   - l'energie va comme le CARRE de la vitesse. Entre 95 et 110 mph il
+ *     n'y a pas 16 % d'ecart mais 45 % : c'est pour cela qu'on parle
+ *     autant de la vitesse de sortie.
+ *   - l'air en reprend les deux tiers pendant le vol.
+ *   - l'air en reprend les deux tiers pendant le vol. La balle qui
+ *     retombe dans les gradins ne va plus qu'a une soixantaine de milles
+ *     a l'heure — et c'est le meme frein qui explique qu'une balle
+ *     frappee a Denver, dans un air plus fin, aille plus loin.
+ * ------------------------------------------------------------------ */
+function BilanEnergie({ circuit: c }) {
+  if (!c) return null;
+  const perdu = Math.round(100 * (1 - c.joulesArrivee / c.joules));
+  return (
+    <div
+      style={{
+        display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6,
+        margin: "10px 0 0", fontFamily: FF_MONO, fontSize: 10.5, color: T.dim,
+      }}
+    >
+      <Glose
+        texte={`${c.joules} joules au contact. L'énergie va comme le carré de la vitesse : entre 95 et 110 mph, l'écart n'est pas de 16 % mais de 45 %. C'est pour cela qu'on parle autant de la vitesse de sortie.`}
+        style={{ color: T.sodium }}
+      >
+        {c.joules} J au contact
+      </Glose>
+      <span aria-hidden="true">→</span>
+      <Glose
+        texte={`La balle se pose à ${c.vitesseArrivee} mph, avec ${c.joulesArrivee} joules : l'air lui en a pris ${perdu} %. C'est ce même frein qui explique qu'une balle frappée à Denver, où l'air est plus fin, aille plus loin.`}
+        style={{ color: T.dim }}
+      >
+        {c.joulesArrivee} J à l'arrivée — l'air en prend {perdu} %
+      </Glose>
     </div>
   );
 }
@@ -6166,8 +6223,8 @@ export {
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
   GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
   // vue « les circuits »
-  VueCircuits, SceneCircuits, ClipCircuit, circuitsDuMatch, CHAMPS_CIRCUITS,
-  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, ROTATION_MAX,
+  VueCircuits, SceneCircuits, ClipCircuit, BilanEnergie, circuitsDuMatch, CHAMPS_CIRCUITS,
+  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, energie, ROTATION_MAX,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »

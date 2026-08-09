@@ -2116,3 +2116,46 @@ describe("les couleurs des franchises", () => {
     assert.equal(couleurEquipe(119), COULEURS[119].c);
   });
 });
+
+describe("l'énergie d'un circuit", () => {
+  test("une demi-masse fois le carré de la vitesse", () => {
+    // Une balle de 145,29 g a 105 mph : 0,5 × 0,14529 × 46,94² ≈ 160 J.
+    assert.ok(Math.abs(A.energie(105) - 160) < 1, `${A.energie(105).toFixed(1)} J`);
+    assert.equal(A.energie(0), 0);
+  });
+
+  test("elle va comme le CARRÉ de la vitesse", () => {
+    /* C'est tout l'interet de la montrer : entre 95 et 110 mph, l'ecart de
+       vitesse est de 16 % mais celui d'energie de 45 %. Un frappeur qui gagne
+       cinq milles a l'heure ne gagne pas cinq pour cent. */
+    const ecartVitesse = 110 / 95 - 1;
+    const ecartEnergie = A.energie(110) / A.energie(95) - 1;
+    assert.ok(Math.abs(ecartVitesse - 0.158) < 0.005);
+    assert.ok(Math.abs(ecartEnergie - 0.34) < 0.02, `${(ecartEnergie * 100).toFixed(0)} %`);
+    // Doubler la vitesse quadruple l'energie.
+    assert.ok(Math.abs(A.energie(200) / A.energie(100) - 4) < 1e-9);
+  });
+
+  test("la balle retombe avec le tiers de ce qu'elle avait", () => {
+    /* L'air en prend les deux tiers : c'est la meme trainee qui explique
+       qu'une balle frappee a Denver, dans un air plus fin, aille plus loin. */
+    for (const [ev, la, spray, dist] of [[110.2, 20, 31.2, 376], [101.5, 27, 10.9, 420], [98, 32, 5, 366]]) {
+      const vol = A.simuler(ev, la, spray, A.ajusterRotation(ev, la, spray, dist));
+      const part = A.energie(vol.vitesseFinale) / A.energie(ev);
+      assert.ok(part > 0.2 && part < 0.45, `il resterait ${(part * 100).toFixed(0)} % de l'énergie`);
+      assert.ok(vol.vitesseFinale > 40 && vol.vitesseFinale < 80,
+        `vitesse d'arrivée invraisemblable : ${vol.vitesseFinale.toFixed(0)} mph`);
+      assert.ok(vol.vitesseFinale < ev, "une balle ne se pose pas plus vite qu'elle n'est partie");
+    }
+  });
+
+  test("le filtre de champs reste économe", () => {
+    /* La vitesse du lancer tenterait, mais `fields` est une liste plate de
+       noms de cles : mettre `pitchData` a cote de `coordinates` fait entrer le
+       suivi complet de chaque lancer, et la requete passe de 41 a 163 Ko. */
+    assert.doesNotMatch(A.CHAMPS_CIRCUITS, /\bpitchData\b/,
+      "pitchData quadruple la réponse — voir le commentaire au-dessus du filtre");
+    assert.doesNotMatch(A.CHAMPS_CIRCUITS, /\bdetails\b/,
+      "details est une clé présente sur chaque lancer");
+  });
+});
