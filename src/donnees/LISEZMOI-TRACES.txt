@@ -34,22 +34,39 @@ que quelqu'un se demande d'ou vient le dessin.
 Ce qui a ete fait au jeu de donnees d'origine
 ---------------------------------------------
 
-  - Deux segments retenus sur six : `outfield_outer` (le mur) et
-    `outfield_inner` (le bord interieur de la piste d'avertissement).
-    Les quatre autres — lignes de faute, avant-champ, marbre — sont
-    reconstruits geometriquement, parce qu'ils sont les memes partout :
-    le reglement fixe les 90 pieds entre les buts.
+  - Deux segments retenus sur six : `outfield_outer` (le contour du
+    terrain) et `outfield_inner` (le bord interieur de la piste
+    d'avertissement). Les quatre autres — lignes de faute, avant-champ,
+    marbre — sont reconstruits geometriquement, parce qu'ils sont les
+    memes partout : le reglement fixe les 90 pieds entre les buts.
+
+  - `outfield_outer` est une BOUCLE FERMEE de tout le terrain, du mur du
+    champ exterieur aux murs de territoire des fautes et au fond derriere
+    le marbre. On la garde entiere : c'est l'empreinte du parc, celle sur
+    laquelle s'appuient les tribunes. Une premiere version n'en gardait
+    que la moitie avant, et ses deux extremites, restees jointes,
+    dessinaient un mur fantome en travers du terrain.
+
+  - Boucle tournee pour commencer au poteau de faute GAUCHE et rejoindre
+    le poteau DROIT en passant par le champ centre. Les deux poteaux sont
+    poses a exactement −45 et +45 degres, par interpolation sur le
+    segment qui y passe : s'arreter au dernier sommet enregistre laissait
+    l'arc du Minute Maid Park finir a 23 degres, la simplification ayant
+    jete les points intermediaires d'un long mur droit. Le champ
+    `k` donne l'indice de ce poteau droit ; le mur, c'est
+    `b.slice(0, k + 1)`.
 
   - Coordonnees ramenees au marbre, en unites de feuille de match, le
     meme repere que les points de chute publies par l'API.
 
-  - Simplification de Douglas-Peucker a 0,15 unite, soit 0,4 pied :
-    3 301 points deviennent 1 211, et le fichier tient en 8 Ko de gzip.
-    Ce n'est pas un reechantillonnage — l'algorithme conserve un
-    sous-ensemble des sommets d'origine, ceux qui portent les angles, et
-    ne jette que les points situes a moins de 0,4 pied de la corde entre
-    leurs voisins. Les creux des allees et les coins pres des poteaux
-    sont donc ceux du releve.
+  - Simplification de Douglas-Peucker a 0,15 unite, soit 0,4 pied, mais
+    l'arc du champ et le reste de la boucle sont simplifies separement,
+    pour que les poteaux restent des sommets et que `k` ne bouge pas. Le
+    fichier tient en 8 Ko de gzip. Ce n'est pas un reechantillonnage —
+    l'algorithme conserve un sous-ensemble des sommets d'origine, ceux
+    qui portent les angles, et ne jette que les points situes a moins de
+    0,4 pied de la corde entre leurs voisins. Les creux des allees et les
+    coins pres des poteaux sont donc ceux du releve.
 
   - Indexation par identifiant de STADE, et non par equipe. Le releve
     date de 2018 : les Athletics ont quitte le Coliseum et les Rangers
@@ -63,3 +80,19 @@ L'echelle, elle, n'est pas figee dans le fichier : elle est calee a
 l'execution sur les trois distances de clotures que publie l'API. La
 forme vient du releve, la taille des nombres mesures — un parc dont on
 repeint les clotures se recale donc tout seul.
+
+Ce que le jeu de donnees ne contient PAS : les tribunes
+-------------------------------------------------------
+
+GeomMLBStadiums s'arrete au niveau du terrain — six segments, aucun
+volume bati — et aucune autre source publique ne donne les gradins des
+trente parcs. Le bol qu'on voit dans « les circuits » n'est donc pas
+releve : il est DEDUIT de deux choses mesurees, l'empreinte ci-dessus et
+la capacite que publie l'API (`fieldInfo.capacity`), a raison de six
+pieds carres par siege, circulations comprises. La pente est celle
+d'usage, un peu plus d'un demi-pied de haut par pied de fond ; le toit
+(`fieldInfo.roofType`) devient une couronne au-dessus des gradins.
+
+Le bol a donc la bonne taille et la bonne emprise au sol, pas
+l'architecture du stade. La note sous la vue le dit a l'ecran, parc par
+parc, avec la capacite qui a servi au calcul.

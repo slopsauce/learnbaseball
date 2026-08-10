@@ -1997,8 +1997,11 @@ describe("le tracé des parcs", () => {
          d'ecart, et certains parcs sont presque polygonaux. C'est la
          couverture angulaire, testee plus bas, qui dit si l'arc est complet —
          pas le nombre de sommets. */
-      assert.ok(t.m.length >= 12 && t.m.length % 2 === 0, `mur mal formé : ${t.n} (${t.m.length / 2} points)`);
+      assert.ok(t.b.length >= 24 && t.b.length % 2 === 0, `boucle mal formée : ${t.n} (${t.b.length / 2} points)`);
       assert.equal(t.p.length % 2, 0, `piste mal formée : ${t.n}`);
+      /* `k` designe le poteau de faute droit DANS la boucle : il doit y
+         rester, et laisser derriere lui de quoi faire le tour du parc. */
+      assert.ok(t.k >= 5 && t.k < t.b.length / 2 - 5, `indice de poteau hors boucle : ${t.n} (k=${t.k})`);
     }
   });
 
@@ -2020,12 +2023,30 @@ describe("le tracé des parcs", () => {
     const ECHELLE = 2.45; // pieds par unite, ordre de grandeur du releve
     for (const t of Object.values(TRACES)) {
       const rayons = [];
-      for (let i = 0; i < t.m.length; i += 2) {
-        const [x, y] = [t.m[i], t.m[i + 1]];
+      for (let i = 0; i <= 2 * t.k; i += 2) {
+        const [x, y] = [t.b[i], t.b[i + 1]];
         if (y > 40) rayons.push(Math.hypot(x, y) * ECHELLE);
       }
       const max = Math.max(...rayons);
       assert.ok(max > 250 && max < 560, `${t.n} : rayon maximal ${max.toFixed(0)} pi`);
+    }
+  });
+
+  test("la boucle fait le tour du parc, marbre compris", () => {
+    /* Ce qui vient APRES le poteau droit, c'est le territoire des fautes et
+       le fond derriere le marbre : c'est cette moitie-la qui porte les
+       tribunes. Si elle manquait, le bol s'arreterait aux poteaux et le
+       public tiendrait dans le seul champ exterieur. */
+    for (const t of Object.values(TRACES)) {
+      const pts = [];
+      for (let i = 0; i < t.b.length; i += 2) pts.push([t.b[i], t.b[i + 1]]);
+      const derriere = pts.filter(([, y]) => y < 0);
+      assert.ok(derriere.length >= 3, `${t.n} : rien derrière le marbre (${derriere.length} points)`);
+      const recul = Math.max(...derriere.map(([x, y]) => Math.hypot(x, y)));
+      // Le fond du marbre est a quelques dizaines de pieds, jamais au-dela
+      // d'un demi-terrain : au-dela, c'est que la boucle s'est refermee de
+      // travers.
+      assert.ok(recul > 12 && recul < 90, `${t.n} : fond du marbre à ${recul.toFixed(0)} unités`);
     }
   });
 
@@ -2035,16 +2056,97 @@ describe("le tracé des parcs", () => {
        extremites jointes : le ruban dessinait alors un mur en travers du
        terrain, juste devant le marbre — et ca se voyait a l'ecran sans que
        rien ne le signale. Un arc valide progresse en angle, point apres
-       point, du poteau gauche au poteau droit. */
+       point, du poteau gauche au poteau droit.
+
+       Les poteaux sont poses A EXACTEMENT ±45 degres, par interpolation sur
+       le segment qui y passe. S'arreter au dernier sommet enregistre ne
+       suffisait pas : le long d'un mur droit, la simplification a jete les
+       points intermediaires, et l'arc du Minute Maid Park s'arretait a 23
+       degres — vingt-deux degres de mur en moins, du bon cote de la boucle
+       cette fois, donc invisible a l'oeil. */
     for (const t of Object.values(TRACES)) {
       const ang = [];
-      for (let i = 0; i < t.m.length; i += 2) ang.push(Math.atan2(t.m[i], t.m[i + 1]) * (180 / Math.PI));
+      for (let i = 0; i <= 2 * t.k; i += 2) ang.push(Math.atan2(t.b[i], t.b[i + 1]) * (180 / Math.PI));
       for (let i = 0; i < ang.length - 1; i++)
         assert.ok(ang[i + 1] > ang[i],
           `${t.n} : le tracé revient en arrière à ${ang[i].toFixed(1)}° → ${ang[i + 1].toFixed(1)}°`);
-      assert.ok(ang[0] < -40 && ang[ang.length - 1] > 40,
-        `${t.n} : l'arc ne couvre pas les deux lignes de faute (${ang[0].toFixed(0)}° → ${ang[ang.length - 1].toFixed(0)}°)`);
+      assert.ok(Math.abs(ang[0] + 45) < 0.2 && Math.abs(ang[ang.length - 1] - 45) < 0.2,
+        `${t.n} : l'arc ne finit pas sur les poteaux (${ang[0].toFixed(1)}° → ${ang[ang.length - 1].toFixed(1)}°)`);
     }
+  });
+});
+
+/* Les tribunes vivent dans le morceau three.js, mais leur geometrie est du
+   calcul pur : aucun canevas, aucun WebGL. On peut donc l'eprouver ici. */
+const { tribunes } = await import("../src/scene-circuits.js");
+const { Vector3 } = await import("three");
+
+describe("les tribunes déduites", () => {
+
+  /* Une empreinte de parc credible : l'arc du champ d'un poteau a l'autre,
+     puis un fond derriere le marbre. C'est la forme que rend le releve. */
+  const empreinte = () => {
+    const pts = [];
+    for (let a = -45; a <= 45; a += 6) {
+      const t = (a * Math.PI) / 180;
+      pts.push([380 * Math.sin(t), 380 * Math.cos(t)]);
+    }
+    for (let a = 120; a <= 240; a += 15) {
+      const t = (a * Math.PI) / 180;
+      pts.push([70 * Math.sin(t), 70 * Math.cos(t)]);
+    }
+    return pts;
+  };
+
+  test("la capacité annoncée donne la profondeur des gradins", () => {
+    const petit = tribunes(empreinte(), { places: 25000 });
+    const grand = tribunes(empreinte(), { places: 56000 });
+    assert.ok(grand.profondeur > petit.profondeur * 1.5,
+      `${petit.profondeur.toFixed(0)} pi pour 25 000 places, ${grand.profondeur.toFixed(0)} pour 56 000`);
+    // Des ordres de grandeur de vrai stade : un bol de vingt pieds ou de six
+    // cents ne dirait plus rien de la capacite.
+    for (const g of [petit, grand])
+      assert.ok(g.profondeur > 60 && g.profondeur < 260, `profondeur ${g.profondeur.toFixed(0)} pi`);
+    assert.ok(grand.hauteur > 80 && grand.hauteur < 160, `hauteur ${grand.hauteur.toFixed(0)} pi`);
+  });
+
+  test("un parc dont la capacité manque garde des tribunes", () => {
+    // L'API ne publie pas toujours `capacity` : mieux vaut un bol par defaut
+    // qu'un stade a ciel ouvert sur du vide.
+    const g = tribunes(empreinte(), {});
+    assert.ok(g && g.profondeur > 60, "pas de tribunes sans capacité");
+  });
+
+  test("le bol enveloppe le terrain, il ne le recouvre pas", () => {
+    const g = tribunes(empreinte(), { places: 45000 });
+    const rayonTerrain = Math.max(...empreinte().map(([x, y]) => Math.hypot(x, y)));
+    assert.ok(g.rayon > rayonTerrain,
+      `le bord extérieur (${g.rayon.toFixed(0)}) doit dépasser le mur (${rayonTerrain.toFixed(0)})`);
+    /* Aucun sommet ne doit tomber a l'interieur du contour : c'est
+       exactement ce qu'une normale retournee du mauvais cote produirait —
+       des gradins plantes au milieu du champ centre. */
+    let dedans = 0;
+    // En coordonnees de MONDE : les pylones ont leur propre repere, et leurs
+    // sommets tomberaient tous a l'origine si on lisait la geometrie brute.
+    g.groupe.updateMatrixWorld(true);
+    const v = new Vector3();
+    g.groupe.traverse((o) => {
+      const p = o.geometry?.getAttribute?.("position");
+      if (!p) return;
+      for (let i = 0; i < p.count; i++) {
+        v.fromBufferAttribute(p, i).applyMatrix4(o.matrixWorld);
+        assert.ok(Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z),
+          "sommet non fini dans les tribunes");
+        if (Math.hypot(v.x, v.z) < 60) dedans++;
+      }
+    });
+    assert.equal(dedans, 0, `${dedans} sommets de tribune à moins de 60 pieds du marbre`);
+  });
+
+  test("un toit fermé ou rétractable pose une couronne, un ciel ouvert non", () => {
+    assert.ok(tribunes(empreinte(), { places: 41000, toit: "Dome" }).groupe.getObjectByName("toit"));
+    assert.ok(tribunes(empreinte(), { places: 41000, toit: "Retractable" }).groupe.getObjectByName("toit"));
+    assert.ok(!tribunes(empreinte(), { places: 41000, toit: "Open" }).groupe.getObjectByName("toit"));
   });
 });
 

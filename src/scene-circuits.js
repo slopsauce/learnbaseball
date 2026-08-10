@@ -39,10 +39,25 @@ const paires = (plat) => {
   return out;
 };
 
-function construireMur(idStade, distances) {
+/* Faute de trace, une empreinte plausible : l'arc interpole du champ,
+   prolonge le long des lignes de faute et ferme par un fond de marbre.
+   Elle ne sert qu'a poser les tribunes — le mur, lui, reste l'arc. */
+function contourDeSecours(arc) {
+  const R = 70;                       // rayon du fond derriere le marbre, pieds
+  const pt = (aDeg, r) => {
+    const a = (aDeg * Math.PI) / 180;
+    return [r * Math.sin(a), r * Math.cos(a)];
+  };
+  const fond = [];
+  for (let a = 135; a <= 225; a += 15) fond.push(pt(a, R));
+  return [...arc, ...fond];
+}
+
+function construireMur(idStade, stade) {
   const t = TRACES[idStade];
-  if (t && distances) {
-    const mur = paires(t.m);
+  if (t && stade) {
+    const boucle = paires(t.b);
+    const mur = boucle.slice(0, t.k + 1);
     const rayonA = (pts, aDeg) => {
       const a = (aDeg * Math.PI) / 180;
       let best = Infinity, r = 0;
@@ -53,20 +68,237 @@ function construireMur(idStade, distances) {
       return r;
     };
     const rs = [rayonA(mur, -45), rayonA(mur, 0), rayonA(mur, 45)];
-    const pub = [Number(distances.gauche), Number(distances.centre), Number(distances.droite)];
+    const pub = [Number(stade.gauche), Number(stade.centre), Number(stade.droite)];
     if (rs.every((x) => x > 1) && pub.every((x) => Number.isFinite(x) && x > 100)) {
       // Echelle par moindres carres : une seule inconnue, trois mesures.
       const k = rs.reduce((s, r, i) => s + r * pub[i], 0) / rs.reduce((s, r) => s + r * r, 0);
+      const cadrer = (pts) => pts.map(([x, y]) => [x * k, y * k]);
       return {
         qualite: "trace",
         nom: t.n,
-        mur: mur.map(([x, y]) => [x * k, y * k]),
-        piste: t.p.length ? paires(t.p).map(([x, y]) => [x * k, y * k]) : null,
+        mur: cadrer(mur),
+        contour: cadrer(boucle),
+        piste: t.p.length ? cadrer(paires(t.p)) : null,
       };
     }
   }
-  const repli = distances ? murDuParc(distances) : null;
-  return repli ? { qualite: "interpole", mur: repli, piste: null } : { qualite: "aucun", mur: null, piste: null };
+  const repli = stade ? murDuParc(stade) : null;
+  return repli
+    ? { qualite: "interpole", mur: repli, contour: contourDeSecours(repli), piste: null }
+    : { qualite: "aucun", mur: null, contour: null, piste: null };
+}
+
+/* ------------------------------------------------------------------ *
+ *  LES TRIBUNES
+ *  Elles ne sont RELEVEES NULLE PART. Aucun jeu de donnees public ne
+ *  donne le volume bati des trente parcs — GeomMLBStadiums s'arrete au
+ *  niveau du terrain. Ce qu'on a de reel, c'est l'EMPREINTE (la boucle
+ *  du releve) et la CAPACITE annoncee par la ligue. Le bol se deduit des
+ *  deux : a six pieds carres par siege, circulations comprises, une
+ *  capacite et un perimetre donnent une profondeur de gradins. La pente
+ *  vient ensuite — un peu plus d'un demi-pied de haut par pied de fond,
+ *  la rake habituelle.
+ *
+ *  Donc : l'empreinte est mesuree, le volume est DEDUIT. Un parc de
+ *  quarante-cinq mille places aura le bol d'un parc de quarante-cinq
+ *  mille places, pas celui de son architecte. L'ecran le dit.
+ * ------------------------------------------------------------------ */
+const AIRE_PAR_SIEGE = 6;     // pieds carres par siege, circulations comprises
+const PENTE = 0.55;           // hauteur gagnee par pied de profondeur
+const BASE_TRIBUNE = HAUTEUR_MUR;
+
+/* L'empreinte, revue en etoile autour du centre du parc : un rayon par
+   pas d'angle, garde au plus loin quand il coupe le contour plusieurs
+   fois. Ce n'est pas de la coquetterie — decaler le contour BRUT le long
+   de ses normales le repliait sur lui-meme aux angles rentrants, et le
+   pli montait au-dessus du bol en escalier, bien visible a Fenway et a
+   Wrigley. Vu du centre, un decalage radial ne peut plus se replier.
+   Le mur, lui, garde le trace exact : c'est le bol qu'on redresse. */
+function empreinteEnEtoile(pts, pas = 64) {
+  const n = pts.length;
+  const cx = pts.reduce((s, p) => s + p[0], 0) / n;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / n;
+  const sortie = [];
+  for (let k = 0; k < pas; k++) {
+    const a = (2 * Math.PI * k) / pas;
+    const dx = Math.cos(a), dy = Math.sin(a);
+    let rMax = 0;
+    for (let i = 0; i < n; i++) {
+      const p = pts[i], q = pts[(i + 1) % n];
+      const ex = q[0] - p[0], ey = q[1] - p[1];
+      const det = dx * (-ey) - dy * (-ex);
+      if (Math.abs(det) < 1e-9) continue;
+      const ox = p[0] - cx, oy = p[1] - cy;
+      const r = (ox * -ey - oy * -ex) / det;      // le long du rayon
+      const u = (dx * oy - dy * ox) / det;        // le long de l'arete
+      if (r > rMax && u >= 0 && u <= 1) rMax = r;
+    }
+    if (rMax > 0) sortie.push({ p: [cx + dx * rMax, cy + dy * rMax], n: [dx, dy] });
+  }
+  return { points: sortie.map((s) => s.p), normales: sortie.map((s) => s.n), centre: [cx, cy] };
+}
+
+const maille = (pos, idx, couleur) => {
+  const g = new BufferGeometry();
+  g.setAttribute("position", pos);
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return new Mesh(g, new MeshLambertMaterial({ color: couleur, side: DoubleSide }));
+};
+
+/* Combien de quartiers on decoupe le bol. Assez pour que la coupe suive la
+   camera de pres, pas au point de multiplier les appels de rendu. */
+const SECTEURS = 16;
+// On ouvre le bol sur un peu plus d'un quart de tour, du cote de la camera.
+const COS_COUPE = Math.cos((56 * Math.PI) / 180);
+
+export function tribunes(empreinte, { places, toit }) {
+  if (empreinte.length < 8) return null;
+  const etoile = empreinteEnEtoile(empreinte);
+  const contour = etoile.points, nor = etoile.normales;
+  const [cx, cy] = etoile.centre;
+  const n = contour.length;
+  if (n < 8) return null;
+
+  let perimetre = 0;
+  for (let i = 0; i < n; i++) {
+    const a = contour[i], b = contour[(i + 1) % n];
+    perimetre += Math.hypot(a[0] - b[0], a[1] - b[1]);
+  }
+  const brut = Number(places) > 0 ? (Number(places) * AIRE_PAR_SIEGE) / perimetre : 150;
+  const profondeur = Math.max(45, Math.min(255, brut));
+  const hauteur = profondeur * PENTE;
+  // Des gradins d'une dizaine de pieds : au-dela ils se lisent comme des
+  // marches d'escalier, en deca la geometrie triple pour rien.
+  const rangs = Math.max(4, Math.min(16, Math.round(hauteur / 10)));
+
+  /* Le profil en coupe, en fractions : on monte d'un cran (contremarche)
+     puis on recule d'un cran (giron), et ainsi de suite. */
+  const profil = [];
+  for (let j = 0; j < rangs; j++) {
+    profil.push([j / rangs, j / rangs]);
+    profil.push([j / rangs, (j + 1) / rangs]);
+  }
+  profil.push([1, 1]);
+
+  const dehors = contour.map(([x, y], i) => [x + nor[i][0] * profondeur, y + nor[i][1] * profondeur]);
+
+  /* Un seul tableau de sommets pour tout le bol : les rangees du profil,
+     puis une derniere rangee au SOL sous le bord exterieur, qui donne son
+     pied a la facade. Les quartiers se partagent ce tableau et ne different
+     que par leurs triangles — c'est ce qui rend la decoupe gratuite. */
+  const brutPos = [];
+  for (const [u, v] of profil) {
+    for (let i = 0; i < n; i++) {
+      const [x, y] = contour[i], [nx, ny] = nor[i];
+      brutPos.push(x + nx * u * profondeur, BASE_TRIBUNE + v * hauteur, -(y + ny * u * profondeur));
+    }
+  }
+  const rangSol = profil.length;
+  for (const [x, y] of dehors) brutPos.push(x, 0, -y);
+  const pos = new Float32BufferAttribute(brutPos, 3);
+
+  // Les sommets de la couronne, quand il y a un toit : deux par arete.
+  const hToit = BASE_TRIBUNE + hauteur + 16;
+  const couvert = toit === "Dome" || toit === "Retractable";
+  let posToit = null;
+  if (couvert) {
+    const brutT = [];
+    for (let i = 0; i < n; i++) {
+      const [x, y] = contour[i], [nx, ny] = nor[i];
+      const dx = x + nx * profondeur * 0.55, dy = y + ny * profondeur * 0.55;
+      brutT.push(dx, hToit, -dy, dehors[i][0], hToit + 6, -dehors[i][1]);
+    }
+    posToit = new Float32BufferAttribute(brutT, 3);
+  }
+
+  const groupe = new Group();
+  const quartiers = [];
+  for (let s = 0; s < SECTEURS; s++) {
+    const i0 = Math.floor((s * n) / SECTEURS), i1 = Math.floor(((s + 1) * n) / SECTEURS);
+    if (i1 <= i0) continue;
+    /* Deux mailles sur les memes sommets : les contremarches d'un cote, les
+       girons de l'autre. Une seule suffirait a la forme, mais les rangs ne
+       se detacheraient qu'a la faveur de l'eclairage — ici ils se detachent
+       toujours, et le bol se lit comme des gradins et non comme une rampe. */
+    const contremarches = [], girons = [], facade = [], couronne = [];
+    for (let r = 0; r < profil.length - 1; r++) {
+      const cible = profil[r][0] === profil[r + 1][0] ? contremarches : girons;
+      for (let i = i0; i < i1; i++) {
+        const a = r * n + i, b = r * n + ((i + 1) % n);
+        cible.push(a, a + n, b, b, a + n, b + n);
+      }
+    }
+    // La facade : du sol jusqu'au haut du bol. C'est elle qui fait que le
+    // parc a un dehors, et pas seulement un dedans.
+    for (let i = i0; i < i1; i++) {
+      const haut = (profil.length - 1) * n, j = (i + 1) % n;
+      facade.push(rangSol * n + i, haut + i, rangSol * n + j, rangSol * n + j, haut + i, haut + j);
+      if (couvert) {
+        const a = 2 * i, b = 2 * j;
+        couronne.push(a, b, a + 1, a + 1, b, b + 1);
+      }
+    }
+
+    const q = new Group();
+    q.add(maille(pos, contremarches, SIEGES));
+    q.add(maille(pos, girons, BETON));
+    q.add(maille(pos, facade, BETON_SOMBRE));
+    if (couvert) {
+      const t = maille(posToit, couronne, BETON_SOMBRE);
+      t.name = "toit";
+      q.add(t);
+    }
+    // Le lisere du haut : la ligne de toiture, qui donne l'echelle du bol.
+    const rebord = [];
+    for (let i = i0; i <= i1; i++) rebord.push(V(...dehors[i % n], BASE_TRIBUNE + hauteur + 0.6));
+    q.add(new Line(new BufferGeometry().setFromPoints(rebord), new LineBasicMaterial({ color: 0x6f8f7c })));
+
+    /* La direction du quartier, vue du CENTRE DU PARC et non du marbre :
+       le marbre est au bord de l'empreinte, un azimut mesure de la ne
+       designerait pas le meme quartier que celui ou se trouve la camera. */
+    let dx = 0, dy = 0;
+    for (let i = i0; i < i1; i++) { dx += dehors[i][0] - cx; dy += dehors[i][1] - cy; }
+    const l = Math.hypot(dx, dy) || 1;
+    quartiers.push({ groupe: q, dx: dx / l, dz: -dy / l });
+    groupe.add(q);
+  }
+
+  /* Les pylones d'eclairage, sur le pourtour du champ exterieur. Ils ne
+     sont pas au bon endroit parc par parc — mais un stade de nuit sans
+     eclairage ne ressemble a rien, et leur hauteur donne l'echelle. Chacun
+     part avec son quartier : sinon un mat reste plante devant la coupe.
+     Sous un toit, aucun : un stade couvert s'eclaire par sa charpente. */
+  for (let j = 0; !couvert && j < 6; j++) {
+    const i = Math.min(n - 1, Math.round(((j + 0.5) / 6) * (n / 2)));
+    const [x, y] = dehors[i];
+    const mat = new Mesh(new CylinderGeometry(1.6, 2.6, 62, 6), new MeshLambertMaterial({ color: BETON_SOMBRE }));
+    mat.position.set(x, BASE_TRIBUNE + hauteur + 31, -y);
+    const lampes = new Mesh(new PlaneGeometry(34, 12), new MeshBasicMaterial({ color: 0xfff0c4, side: DoubleSide }));
+    lampes.position.set(x, BASE_TRIBUNE + hauteur + 62, -y);
+    lampes.lookAt(0, BASE_TRIBUNE, 0);
+    const q = quartiers[Math.min(quartiers.length - 1, Math.floor((i * SECTEURS) / n))];
+    q.groupe.add(mat, lampes);
+  }
+
+  return {
+    groupe,
+    profondeur,
+    hauteur,
+    rayon: Math.max(...dehors.map(([x, y]) => Math.hypot(x, y))),
+    /* LA COUPE. Un bol ferme est fidele et illisible : depuis le marbre, on
+       regarde le dos des tribunes et le terrain a disparu. On efface donc
+       les quartiers situes DU COTE DE LA CAMERA, comme une maquette qu'on
+       ouvrirait pour montrer l'interieur — et la balle reste visible de
+       bout en bout, quel que soit l'angle. */
+    couper(position) {
+      const px = position.x - cx, pz = position.z + cy;
+      const l = Math.hypot(px, pz) || 1;
+      for (const q of quartiers) {
+        q.groupe.visible = (q.dx * px + q.dz * pz) / l < COS_COUPE;
+      }
+    },
+  };
 }
 
 /* La palette de l'application, en nombres. Le gazon et la terre battue
@@ -76,6 +308,10 @@ const GAZON = 0x2f6b3f, GAZON_CLAIR = 0x3a7d4a, TERRE = 0xb08a5e;
 // Le mur est plus sombre que la pelouse : sans cet ecart il disparaissait.
 const CRAIE = 0xeff3ea, CIEL = 0x0b241a, MUR = 0x1d4a30;
 const OR = 0xf2ce6b;
+/* Les tribunes : du beton et des sieges, tenus loin du vert du terrain
+   pour qu'on voie tout de suite ou finit le jeu et ou commence le public. */
+const BETON = 0x54606a, BETON_SOMBRE = 0x2c353d, SIEGES = 0x39505f;
+const DEHORS = 0x101d18;   // le sol au-dela du parc
 
 /* Repere de simulation (x = champ droit, y = champ centre, z = ciel) vers
    celui de three (y en l'air, z vers le spectateur). */
@@ -151,9 +387,10 @@ function rubanSol(interieur, exterieur, h, couleur) {
  *  `mur`      : polyligne du parc, en pieds, ou null
  *  Rend une poignee : { choisir, redimensionner, detruire }.
  * ------------------------------------------------------------------ */
-export function monterScene(conteneur, { circuits, idStade, distances, animer = true }) {
-  const parc = construireMur(idStade, distances);
+export function monterScene(conteneur, { circuits, idStade, stade, animer = true }) {
+  const parc = construireMur(idStade, stade);
   const mur = parc.mur;
+  const gradins = parc.contour ? tribunes(parc.contour, stade || {}) : null;
   const renderer = new WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.setSize(conteneur.clientWidth, conteneur.clientHeight);
@@ -165,26 +402,36 @@ export function monterScene(conteneur, { circuits, idStade, distances, animer = 
   scene.background = new Color(CIEL);
   // Le brouillard commence apres la cloture : plus tot, il effacait le mur
   // au moment meme ou la balle le franchit.
-  scene.fog = new Fog(CIEL, 1100, 2600);
+  scene.fog = new Fog(CIEL, 1400, 3200);
 
-  const camera = new PerspectiveCamera(45, conteneur.clientWidth / conteneur.clientHeight, 1, 4000);
-  const cible = new Vector3(0, 20, -150);
+  const camera = new PerspectiveCamera(45, conteneur.clientWidth / conteneur.clientHeight, 1, 6000);
+  /* Le point vise se porte au-dela du monticule quand il y a un parc a
+     cadrer : vise sur le marbre, le stade tenait dans la moitie haute de
+     l'image et le reste etait du vide. Toute la nuit, il n'y a ni parc ni
+     tribunes — seulement la gerbe des trajectoires, qui se cadre de pres. */
+  const cible = new Vector3(0, 30, gradins ? -250 : -150);
   /* Vue par defaut : DERRIERE LE MARBRE, la ou personne ne s'assoit mais
      d'ou tout se lit — la balle part vers le fond de l'image, comme on la
      suit des yeux au stade. Un demi-tour (theta = pi) mettrait la camera
      derriere le champ centre, a regarder le terrain a l'envers.
-     Sur un ecran etroit on recule, sinon la cloture sort du cadre. */
+     Sur un ecran etroit on recule, sinon la cloture sort du cadre.
+
+     Les tribunes ne l'ont pas fait reculer : c'est le BOL qui s'ouvre du
+     cote de la camera. Reculer jusqu'a passer par-dessus les gradins
+     rendait la trajectoire — ce qu'on est venu voir — large d'un pixel. */
   let theta = 0, phi = 1.24;
-  let rayon = conteneur.clientWidth < 520 ? 620 : 470;
+  const etroit = conteneur.clientWidth < 520;
+  let rayon = gradins ? (etroit ? 600 : 540) : (etroit ? 560 : 430);
   const placerCamera = () => {
     phi = Math.max(0.18, Math.min(1.45, phi));
-    rayon = Math.max(140, Math.min(1600, rayon));
+    rayon = Math.max(140, Math.min(2000, rayon));
     camera.position.set(
       cible.x + rayon * Math.sin(phi) * Math.sin(theta),
       cible.y + rayon * Math.cos(phi),
       cible.z + rayon * Math.sin(phi) * Math.cos(theta)
     );
     camera.lookAt(cible);
+    gradins?.couper(camera.position);
   };
   placerCamera();
 
@@ -195,8 +442,27 @@ export function monterScene(conteneur, { circuits, idStade, distances, animer = 
   soleil.position.set(-300, 500, 200);
   scene.add(soleil);
 
-  // --- la pelouse, l'avant-champ, les lignes de faute ---
-  const pelouse = new Mesh(new CircleGeometry(600, 64), new MeshLambertMaterial({ color: GAZON }));
+  // --- le sol autour du parc, la pelouse, l'avant-champ, les lignes ---
+  /* Sous les tribunes et au-dela, la ville : un sol sombre. Sans lui, la
+     pelouse debordait le stade et le bol semblait pose sur un pre. */
+  const dehors = new Mesh(new CircleGeometry(2600, 48), new MeshLambertMaterial({ color: DEHORS }));
+  dehors.rotation.x = -Math.PI / 2;
+  dehors.position.y = -0.6;
+  scene.add(dehors);
+
+  /* La pelouse s'arrete AU CONTOUR DU PARC, pas sur un disque : le gazon
+     debordait derriere le marbre, la ou il n'y a que du beton, et le stade
+     paraissait pose au milieu d'un pre. */
+  let formeGazon = null;
+  if (parc.contour) {
+    formeGazon = new Shape();
+    parc.contour.forEach(([x, y], i) => (i ? formeGazon.lineTo(x, y) : formeGazon.moveTo(x, y)));
+    formeGazon.closePath();
+  }
+  const pelouse = new Mesh(
+    formeGazon ? new ShapeGeometry(formeGazon) : new CircleGeometry(600, 64),
+    new MeshLambertMaterial({ color: GAZON })
+  );
   pelouse.rotation.x = -Math.PI / 2;
   scene.add(pelouse);
 
@@ -246,7 +512,9 @@ export function monterScene(conteneur, { circuits, idStade, distances, animer = 
     scene.add(new Line(g, new LineBasicMaterial({ color: CRAIE })));
   });
 
-  // --- le mur du parc ---
+  // --- les tribunes, puis le mur du parc ---
+  if (gradins) scene.add(gradins.groupe);
+
   if (mur) {
     if (parc.piste) scene.add(rubanSol(parc.piste, mur, 0.25, TERRE));
     scene.add(ruban(mur, HAUTEUR_MUR, MUR));
@@ -254,16 +522,14 @@ export function monterScene(conteneur, { circuits, idStade, distances, animer = 
       new BufferGeometry().setFromPoints(mur.map(([x, y]) => V(x, y, HAUTEUR_MUR + 0.3))),
       new LineBasicMaterial({ color: OR })
     ));
-    /* Les trois distances mesurees, la ou elles sont peintes. Elles disent
-       aussi, en creux, que le reste du mur est interpole. */
     /* Les trois distances mesurees, posees sur le mur a l'angle ou elles
        sont peintes. Sur un trace reel elles disent que l'echelle est calee
        dessus ; sur une cloture interpolee, elles disent ou s'arrete le su. */
-    const marques = distances
+    const marques = stade
       ? [
-          [-45, distances.gauche],
-          [0, distances.centre],
-          [45, distances.droite],
+          [-45, stade.gauche],
+          [0, stade.centre],
+          [45, stade.droite],
         ].filter(([, d]) => Number.isFinite(Number(d)))
       : [];
     marques.forEach(([angle, d]) => {
@@ -355,7 +621,12 @@ export function monterScene(conteneur, { circuits, idStade, distances, animer = 
   tourner();
 
   return {
-    parc: { qualite: parc.qualite, nom: parc.nom || null },
+    parc: {
+      qualite: parc.qualite,
+      nom: parc.nom || null,
+      // Ce que la note sous la scene doit pouvoir dire : d'ou sort le bol.
+      gradins: gradins ? { places: Number(stade?.places) || null, toit: stade?.toit || null } : null,
+    },
     choisir(i, volSecondes) {
       choisi = i;
       tracés.forEach((tr, k) => { tr.tube.material.opacity = i < 0 || k === i ? 0.92 : 0.12; });
