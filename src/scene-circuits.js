@@ -15,7 +15,7 @@ import {
   Mesh, Group, Line, Sprite, SpriteMaterial, CanvasTexture,
   BufferGeometry, Float32BufferAttribute, CircleGeometry, ShapeGeometry,
   CylinderGeometry, PlaneGeometry, SphereGeometry, TubeGeometry, CatmullRomCurve3,
-  MeshLambertMaterial, MeshBasicMaterial, LineBasicMaterial,
+  MeshLambertMaterial, MeshBasicMaterial, LineBasicMaterial, LineSegments,
   HemisphereLight, DirectionalLight, DoubleSide, Clock,
 } from "three";
 
@@ -138,6 +138,13 @@ function empreinteEnEtoile(pts, pas = 64) {
   return { points: sortie.map((s) => s.p), normales: sortie.map((s) => s.n), centre: [cx, cy] };
 }
 
+const ligne = (pos, idx) => {
+  const g = new BufferGeometry();
+  g.setAttribute("position", pos);
+  g.setIndex(idx);
+  return g;
+};
+
 const maille = (pos, idx, couleur) => {
   const g = new BufferGeometry();
   g.setAttribute("position", pos);
@@ -168,18 +175,32 @@ export function tribunes(empreinte, { places, toit }) {
   const brut = Number(places) > 0 ? (Number(places) * AIRE_PAR_SIEGE) / perimetre : 150;
   const profondeur = Math.max(45, Math.min(255, brut));
   const hauteur = profondeur * PENTE;
-  // Des gradins d'une dizaine de pieds : au-dela ils se lisent comme des
-  // marches d'escalier, en deca la geometrie triple pour rien.
-  const rangs = Math.max(4, Math.min(16, Math.round(hauteur / 10)));
 
-  /* Le profil en coupe, en fractions : on monte d'un cran (contremarche)
-     puis on recule d'un cran (giron), et ainsi de suite. */
+  /* Le profil en coupe, en fractions de profondeur et de hauteur.
+     UN ETAGE OU DEUX, selon la profondeur : c'est le DECROCHEMENT entre
+     les deux — le mur du fond du bas, la coursive, puis le second bol qui
+     repart plus haut et plus loin — qui fait lire un stade. D'un seul
+     tenant, le bol se lisait comme un entonnoir, et c'etait laid. */
   const profil = [];
-  for (let j = 0; j < rangs; j++) {
-    profil.push([j / rangs, j / rangs]);
-    profil.push([j / rangs, (j + 1) / rangs]);
+  const gradin = (u0, u1, v0, v1) => {
+    // Des rangs de deux pieds et demi : la maille reste fine, et le bol se
+    // lit comme un velours raye plutot que comme un escalier.
+    const nb = Math.max(3, Math.min(26, Math.round(((v1 - v0) * hauteur) / 2.5)));
+    for (let j = 0; j < nb; j++) {
+      const t = j / nb, s = (j + 1) / nb;
+      profil.push([u0 + (u1 - u0) * t, v0 + (v1 - v0) * t]);
+      profil.push([u0 + (u1 - u0) * t, v0 + (v1 - v0) * s]);
+    }
+    profil.push([u1, v1]);
+  };
+  if (profondeur > 110) {
+    gradin(0, 0.40, 0, 0.28);
+    profil.push([0.40, 0.46]);      // le mur du fond du premier bol
+    profil.push([0.50, 0.46]);      // la coursive, a decouvert
+    gradin(0.50, 1, 0.53, 1);       // le second bol repart plus haut
+  } else {
+    gradin(0, 1, 0, 1);
   }
-  profil.push([1, 1]);
 
   const dehors = contour.map(([x, y], i) => [x + nor[i][0] * profondeur, y + nor[i][1] * profondeur]);
 
@@ -212,18 +233,30 @@ export function tribunes(empreinte, { places, toit }) {
     posToit = new Float32BufferAttribute(brutT, 3);
   }
 
+  /* Les deux traits qui portent l'echelle : le decrochement entre les
+     etages — la grande marche horizontale — et le rebord du haut. */
+  const rangsForts = [profil.length - 1];
+  for (let r = 1; r < profil.length; r++) {
+    if (profil[r][0] - profil[r - 1][0] > 0.05) rangsForts.push(r - 1, r);
+  }
+
   const groupe = new Group();
   const quartiers = [];
   for (let s = 0; s < SECTEURS; s++) {
     const i0 = Math.floor((s * n) / SECTEURS), i1 = Math.floor(((s + 1) * n) / SECTEURS);
     if (i1 <= i0) continue;
-    /* Deux mailles sur les memes sommets : les contremarches d'un cote, les
-       girons de l'autre. Une seule suffirait a la forme, mais les rangs ne
-       se detacheraient qu'a la faveur de l'eclairage — ici ils se detachent
-       toujours, et le bol se lit comme des gradins et non comme une rampe. */
-    const contremarches = [], girons = [], facade = [], couronne = [];
+    /* Une seule maille pour tout le quartier — gradins, facade, couronne.
+       Le premier essai peignait le beton et les sieges en gris-bleu, avec
+       des girons plus clairs que les contremarches : fidele, et laid. Une
+       masse froide mangeait le cadre, et le terrain — le sujet — passait
+       derriere. Ici la maille est une SILHOUETTE, a peine detachee du
+       ciel, et ce sont des LIGNES qui decrivent les rangs. Le stade est
+       dessine, pas rendu : c'est la meme encre que le reste du site. */
+    const sieges = [], beton = [], couronne = [];
     for (let r = 0; r < profil.length - 1; r++) {
-      const cible = profil[r][0] === profil[r + 1][0] ? contremarches : girons;
+      // Contremarche (meme u) : la face tournee vers le terrain, celle que
+      // le public occupe. Giron : la marche, qu'on ne voit que d'en haut.
+      const cible = profil[r][0] === profil[r + 1][0] ? sieges : beton;
       for (let i = i0; i < i1; i++) {
         const a = r * n + i, b = r * n + ((i + 1) % n);
         cible.push(a, a + n, b, b, a + n, b + n);
@@ -233,7 +266,7 @@ export function tribunes(empreinte, { places, toit }) {
     // parc a un dehors, et pas seulement un dedans.
     for (let i = i0; i < i1; i++) {
       const haut = (profil.length - 1) * n, j = (i + 1) % n;
-      facade.push(rangSol * n + i, haut + i, rangSol * n + j, rangSol * n + j, haut + i, haut + j);
+      beton.push(rangSol * n + i, haut + i, rangSol * n + j, rangSol * n + j, haut + i, haut + j);
       if (couvert) {
         const a = 2 * i, b = 2 * j;
         couronne.push(a, b, a + 1, a + 1, b, b + 1);
@@ -241,18 +274,21 @@ export function tribunes(empreinte, { places, toit }) {
     }
 
     const q = new Group();
-    q.add(maille(pos, contremarches, SIEGES));
-    q.add(maille(pos, girons, BETON));
-    q.add(maille(pos, facade, BETON_SOMBRE));
+    q.add(maille(pos, sieges, SIEGES));
+    q.add(maille(pos, beton, SILHOUETTE));
     if (couvert) {
-      const t = maille(posToit, couronne, BETON_SOMBRE);
+      const t = maille(posToit, couronne, CHARPENTE);
       t.name = "toit";
       q.add(t);
     }
-    // Le lisere du haut : la ligne de toiture, qui donne l'echelle du bol.
-    const rebord = [];
-    for (let i = i0; i <= i1; i++) rebord.push(V(...dehors[i % n], BASE_TRIBUNE + hauteur + 0.6));
-    q.add(new Line(new BufferGeometry().setFromPoints(rebord), new LineBasicMaterial({ color: 0x6f8f7c })));
+    /* Le rebord du haut et le decrochement entre les etages, au trait : ce
+       sont eux qui donnent l'echelle du bol. Les rangs, eux, se lisent tout
+       seuls — les contremarches sont chaudes, les girons sombres. */
+    const forts = [];
+    for (const r of rangsForts) {
+      for (let i = i0; i < i1; i++) forts.push(r * n + i, r * n + ((i + 1) % n));
+    }
+    q.add(new LineSegments(ligne(pos, forts), new LineBasicMaterial({ color: REBORD })));
 
     /* La direction du quartier, vue du CENTRE DU PARC et non du marbre :
        le marbre est au bord de l'empreinte, un azimut mesure de la ne
@@ -267,12 +303,11 @@ export function tribunes(empreinte, { places, toit }) {
   /* Les pylones d'eclairage, sur le pourtour du champ exterieur. Ils ne
      sont pas au bon endroit parc par parc — mais un stade de nuit sans
      eclairage ne ressemble a rien, et leur hauteur donne l'echelle. Chacun
-     part avec son quartier : sinon un mat reste plante devant la coupe.
-     Sous un toit, aucun : un stade couvert s'eclaire par sa charpente. */
-  for (let j = 0; !couvert && j < 6; j++) {
+     part avec son quartier : sinon un mat reste plante devant la coupe. */
+  for (let j = 0; j < 6; j++) {
     const i = Math.min(n - 1, Math.round(((j + 0.5) / 6) * (n / 2)));
     const [x, y] = dehors[i];
-    const mat = new Mesh(new CylinderGeometry(1.6, 2.6, 62, 6), new MeshLambertMaterial({ color: BETON_SOMBRE }));
+    const mat = new Mesh(new CylinderGeometry(1.6, 2.6, 62, 6), new MeshLambertMaterial({ color: SILHOUETTE }));
     mat.position.set(x, BASE_TRIBUNE + hauteur + 31, -y);
     const lampes = new Mesh(new PlaneGeometry(34, 12), new MeshBasicMaterial({ color: 0xfff0c4, side: DoubleSide }));
     lampes.position.set(x, BASE_TRIBUNE + hauteur + 62, -y);
@@ -308,10 +343,19 @@ const GAZON = 0x2f6b3f, GAZON_CLAIR = 0x3a7d4a, TERRE = 0xb08a5e;
 // Le mur est plus sombre que la pelouse : sans cet ecart il disparaissait.
 const CRAIE = 0xeff3ea, CIEL = 0x0b241a, MUR = 0x1d4a30;
 const OR = 0xf2ce6b;
-/* Les tribunes : du beton et des sieges, tenus loin du vert du terrain
-   pour qu'on voie tout de suite ou finit le jeu et ou commence le public. */
-const BETON = 0x54606a, BETON_SOMBRE = 0x2c353d, SIEGES = 0x39505f;
-const DEHORS = 0x101d18;   // le sol au-dela du parc
+/* Les tribunes restent DANS la palette du site : des verts de nuit, a
+   peine detaches du ciel. Un premier essai les avait faites en beton
+   gris-bleu — fidele, et laid : la masse froide mangeait tout le cadre et
+   le terrain, qui est le sujet, passait au second plan. Ici elles font
+   une silhouette qui encadre le jeu, et la seule chose qui brille dans
+   l'image reste ce qu'on est venu regarder : la balle et les lampes. Ce
+   sont des TRAITS qui decrivent les gradins, comme le reste du site est
+   dessine plutot que rendu. */
+const SILHOUETTE = 0x152c24;          // le beton : marches, facade, couronne
+const SIEGES = 0x6d5a37;              // les gradins occupes, dans l'or du site
+const CHARPENTE = 0x2a4639;           // la couronne des stades couverts
+const REBORD = 0x9fae9c;              // le rebord du haut et le decrochement
+const DEHORS = 0x0c1a15;   // le sol au-dela du parc
 
 /* Repere de simulation (x = champ droit, y = champ centre, z = ciel) vers
    celui de three (y en l'air, z vers le spectateur). */
@@ -441,6 +485,12 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
   const soleil = new DirectionalLight(0xfff3d6, 0.85);
   soleil.position.set(-300, 500, 200);
   scene.add(soleil);
+  /* Une seconde source, depuis le marbre : les gradins d'en face tournent
+     leur dos au soleil et ne rendaient qu'une masse noire. Faible, et
+     seulement pour que les rangs se lisent. */
+  const appoint = new DirectionalLight(0xe8f2e4, 0.32);
+  appoint.position.set(120, 260, 700);
+  scene.add(appoint);
 
   // --- le sol autour du parc, la pelouse, l'avant-champ, les lignes ---
   /* Sous les tribunes et au-dela, la ville : un sol sombre. Sans lui, la
