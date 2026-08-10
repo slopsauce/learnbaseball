@@ -5142,7 +5142,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
           <SceneCircuits
             circuits={circuits}
             idStade={idStade}
-            distances={stade}
+            stade={stade}
             ouvert={ouvert}
             onParc={setParc}
           />
@@ -5223,6 +5223,24 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
                 ailleurs.
               </>
             ) : null}
+            {parc?.gradins && (
+              <>
+                <br />
+                Les tribunes, elles, ne sont <strong>relevées nulle part</strong> — aucune source
+                publique ne donne le bâti des trente parcs. Elles sont <strong>déduites</strong> :
+                l'empreinte est celle du relevé, la profondeur des gradins vient de la capacité
+                annoncée
+                {parc.gradins.places ? ` (${parc.gradins.places.toLocaleString("fr-FR")} places)` : ""} à
+                six pieds carrés par siège, et la pente est celle d'usage. Le bol a donc la bonne
+                taille et la bonne forme au sol, pas l'architecture du stade. Il s'ouvre du côté
+                où l'on se place, comme une maquette qu'on aurait coupée pour voir dedans.
+                {parc.gradins.toit === "Dome"
+                  ? " Le toit fixe est figuré par une couronne au-dessus des gradins."
+                  : parc.gradins.toit === "Retractable"
+                    ? " Ce parc a un toit rétractable : la couronne en figure la structure, ouverte."
+                    : ""}
+              </>
+            )}
           </p>
         </>
       )}
@@ -5341,7 +5359,7 @@ function ClipCircuit({ circuit }) {
    c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
    n'execute pas les effets, donc rien de tout cela ne part en cascade dans
    les tests ou dans une prerendue. */
-function SceneCircuits({ circuits, idStade, distances, ouvert, onParc }) {
+function SceneCircuits({ circuits, idStade, stade, ouvert, onParc }) {
   const boite = useRef(null);
   const poignee = useRef(null);
   const [etat, setEtat] = useState("attente"); // attente | prete | refus
@@ -5358,7 +5376,7 @@ function SceneCircuits({ circuits, idStade, distances, ouvert, onParc }) {
         poignee.current = monterScene(boite.current, {
           circuits: circuits.map((c) => ({ points: c.points, couleur: c.couleur })),
           idStade,
-          distances,
+          stade,
           animer: doux.current,
         });
         setEtat("prete");
@@ -5370,7 +5388,7 @@ function SceneCircuits({ circuits, idStade, distances, ouvert, onParc }) {
       poignee.current?.detruire();
       poignee.current = null;
     };
-  }, [circuits, idStade, distances, onParc]);
+  }, [circuits, idStade, stade, onParc]);
 
   useEffect(() => {
     const i = circuits.findIndex((c) => c.cle === ouvert);
