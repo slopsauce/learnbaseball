@@ -3232,6 +3232,62 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
           </p>
         </>
       )}
+
+      <CalendrierApresSaison />
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ *  L'ABONNEMENT AU CALENDRIER DE L'APRES-SAISON
+ *  Un fichier .ics pose a cote du site, regenere a chaque passage de la
+ *  tache quotidienne. C'est l'ABONNEMENT qui compte, pas le fichier : en
+ *  aout, la ligue publie bien les cinquante-trois matchs, mais les
+ *  equipes sont des jetons — « AL Wild Card #1 » — et aucune heure n'est
+ *  annoncee. Tout cela se remplit d'octobre, et les matchs « si
+ *  necessaire » d'une serie balayee disparaissent. Un fichier telecharge
+ *  une fois serait faux trois jours plus tard.
+ *
+ *  `webcal://` plutot que `https://` : c'est le protocole qui dit au
+ *  systeme « abonne-toi » au lieu de « telecharge ». Sur telephone il
+ *  ouvre directement l'application de calendrier. L'adresse https reste
+ *  affichee dessous, pour Google Agenda, qui ne veut qu'elle.
+ * ------------------------------------------------------------------ */
+const ICS = "slopsauce.github.io/learnbaseball/apres-saison.ics";
+
+function CalendrierApresSaison() {
+  const [copie, setCopie] = useState(false);
+  return (
+    <div
+      style={{
+        marginTop: 22, paddingTop: 16, borderTop: "1px solid rgba(239,243,234,.12)",
+        fontFamily: FF_MONO, fontSize: 10, color: T.dim, lineHeight: 1.75,
+      }}
+    >
+      <a
+        href={`webcal://${ICS}`}
+        style={{ color: T.clayLit, borderBottom: "1px solid currentColor", textDecoration: "none", fontSize: 11 }}
+      >
+        S'abonner au calendrier de l'après-saison
+      </a>
+      <br />
+      Les matchs d'octobre dans ton agenda, mis à jour tout seuls : aujourd'hui les équipes ne
+      sont que des places au tableau — « AL Wild Card #1 » — et aucun horaire n'est annoncé. Les
+      deux se remplissent quand la ligue les publie, et les matchs « si nécessaire » d'une série
+      déjà pliée s'effacent.
+      <br />
+      Pour Google Agenda, colle cette adresse dans « ajouter par URL » :{" "}
+      <button
+        onClick={() => {
+          navigator.clipboard?.writeText(`https://${ICS}`).then(() => setCopie(true), () => {});
+        }}
+        style={{
+          all: "unset", cursor: "pointer", color: T.clayLit, borderBottom: "1px solid currentColor",
+          wordBreak: "break-all",
+        }}
+      >
+        {copie ? "adresse copiée" : `https://${ICS}`}
+      </button>
     </div>
   );
 }

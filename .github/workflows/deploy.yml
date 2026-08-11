@@ -31,10 +31,10 @@ concurrency: { group: "pages-${{ github.ref }}", cancel-in-progress: true }
 
 jobs:
   build:
-    # Inutile de reconstruire lors du passage planifie : seul le contrat
-    # d'API nous interesse alors. Partout ailleurs — push comme demande de
-    # fusion — on veut lint, tests et build.
-    if: github.event_name != 'schedule'
+    # Le passage planifie reconstruit lui aussi, depuis que le site publie le
+    # calendrier de l'apres-saison : c'est ce passage qui va rechercher les
+    # equipes et les horaires que la ligue vient d'annoncer. Sans lui, le
+    # fichier ne changerait qu'au gre des poussees de code.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -53,6 +53,16 @@ jobs:
 
       - run: npm run build
 
+      # Le calendrier auquel on s'abonne. Apres le build, et non pendant :
+      # `npm run build` reste ainsi hors ligne, et une panne de MLB ne fait
+      # pas rougir une demande de fusion. En echec, l'etape se contente de
+      # reprendre le fichier deja en ligne — un abonnement qui renvoie 404
+      # inquiete les clients, une version d'hier non.
+      - name: calendrier de l'apres-saison
+        run: |
+          npm run ical || curl -fsS -o dist/apres-saison.ics \
+            https://slopsauce.github.io/learnbaseball/apres-saison.ics || true
+
       # Preparer l'artefact Pages n'a de sens que si un deploiement suit. Sur
       # une demande de fusion il ne sert a rien, et il echouerait : GitHub
       # rabat le jeton des demandes de Dependabot en lecture seule, `pages:
@@ -65,11 +75,12 @@ jobs:
         with: { path: dist }
 
   deploy:
-    # Liste blanche, et non « tout sauf schedule » : sous cette forme, ajouter
-    # le declencheur `pull_request` aurait suffi a mettre en ligne le contenu
-    # d'une demande de fusion. Nommer ce qui deploie evite que le prochain
-    # declencheur ajoute le fasse par defaut.
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Tout sauf les demandes de fusion. La forme precedente etait une liste
+    # blanche — nommer ce qui deploie plutot que ce qui ne deploie pas — mais
+    # le passage planifie doit desormais mettre en ligne, lui aussi : c'est
+    # lui qui rafraichit le calendrier. Reste la seule exclusion qui compte,
+    # et elle est explicite : jamais le contenu d'une demande de fusion.
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     environment:

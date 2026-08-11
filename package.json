@@ -9,8 +9,9 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "pretest": "esbuild src/almanach-baseball.jsx --bundle --format=esm --outfile=.test-bundle.mjs --external:react --external:react-dom --log-level=error",
-    "test": "node --test tests/unites.test.mjs tests/rendu.test.mjs",
-    "test:api": "node --test tests/api.test.mjs"
+    "test": "node --test tests/unites.test.mjs tests/rendu.test.mjs tests/ical.test.mjs",
+    "test:api": "node --test tests/api.test.mjs",
+    "ical": "node outils/ical.mjs"
   },
   "keywords": [],
   "author": "",
