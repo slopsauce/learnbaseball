@@ -340,3 +340,46 @@ describe("contrat : imagerie", () => {
     assert.equal(r.status, 200, "les ecussons de la grille de selection ne repondent plus");
   });
 });
+
+/* Ce contrat-la ne depend pas de la saison : l'apres-saison est publiee des
+   la sortie du calendrier, plusieurs mois a l'avance, avec des equipes en
+   jetons. C'est justement cet etat qu'il faut savoir lire. */
+describe("contrat : l'apres-saison, dont depend le calendrier .ics", () => {
+  let jeux;
+  before(async () => {
+    const saison = await j(`${API}/seasons/current?sportId=1`)
+      .then((d) => d.seasons?.[0]?.seasonId);
+    assert.ok(saison, "/seasons/current ne dit plus quelle saison est en cours");
+    const d = await j(`${API}/schedule?sportId=1&season=${saison}&gameTypes=F,D,L,W&hydrate=team`);
+    jeux = (d.dates || []).flatMap((x) => x.games || []);
+    assert.ok(jeux.length > 20, `apres-saison ${saison} : ${jeux.length} matchs publies`);
+  });
+
+  test("les quatre tours sont la, et se nomment comme avant", () => {
+    const tours = new Set(jeux.map((g) => g.gameType));
+    for (const t of ["F", "D", "L", "W"])
+      assert.ok(tours.has(t), `le tour « ${t} » a disparu du calendrier d'apres-saison`);
+  });
+
+  test("chaque match porte de quoi ecrire une fiche de calendrier", () => {
+    for (const g of jeux) {
+      assert.ok(Number.isFinite(g.gamePk), "gamePk manquant : l'identifiant stable du .ics");
+      assert.match(g.officialDate, /^\d{4}-\d{2}-\d{2}$/, `officialDate douteuse : ${g.officialDate}`);
+      assert.ok(Number.isFinite(Date.parse(g.gameDate)), `gameDate illisible : ${g.gameDate}`);
+      assert.equal(typeof g.status?.startTimeTBD, "boolean",
+        "startTimeTBD a disparu : sans lui, les matchs sans horaire se posent a l'heure bouchon");
+      assert.ok(["Y", "N"].includes(g.ifNecessary), `ifNecessary vaut « ${g.ifNecessary} »`);
+      assert.ok(Number.isFinite(g.seriesGameNumber), "seriesGameNumber manquant");
+    }
+  });
+
+  test("les series simultanees restent distinguables", () => {
+    /* Deux series de division se jouent en meme temps dans chaque ligue.
+       `seriesDescription` est le meme pour les deux : seul `description`
+       les separe, par un « 'A' » ou un « 'B' ». Si ce marqueur disparait,
+       le calendrier melangera leurs scores sans rien signaler. */
+    const division = jeux.filter((g) => g.gameType === "D");
+    const cles = new Set(division.map((g) => (g.description || "").trim().replace(/\s*Game\s*\d+$/i, "")));
+    assert.equal(cles.size, 4, `series de division distinguees : ${[...cles].join(" / ") || "aucune"}`);
+  });
+});

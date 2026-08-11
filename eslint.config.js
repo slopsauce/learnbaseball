@@ -60,8 +60,11 @@ export default [
     languageOptions: { globals: globals.node },
   },
 
+  // Les outils de construction tournent sous Node, comme les tests : ils
+  // ecrivent dans `dist/` au moment du deploiement et ne partent jamais
+  // dans le paquet du navigateur.
   {
-    files: ["tests/**/*.mjs"],
+    files: ["outils/**/*.mjs", "tests/**/*.mjs"],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: "module",
