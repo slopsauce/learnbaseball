@@ -8,6 +8,7 @@ import {
   simuler, ajusterRotation, sprayDepuisCoords, murDuParc, energie, ROTATION_MAX,
 } from "./donnees/balistique.js";
 import { couleurEquipe } from "./donnees/couleurs-equipes.js";
+import { abonnerPoussees } from "./pousse-direct.js";
 
 /* ------------------------------------------------------------------ *
  *  L'ALMANACH
@@ -3733,6 +3734,11 @@ const CHAMPS_DIRECT = [
 ].join(",");
 
 const CADENCE_DIRECT = 15000;
+/* Quand le WebSocket de la ligue vit, le sondage n'est plus qu'un filet :
+   il rattrape ce que la poussee ne dit pas — la description d'une balle
+   mise en jeu, qui n'arrive qu'une dizaine de secondes plus tard — et il
+   couvre une poussee manquee sans qu'on s'en apercoive. */
+const CADENCE_FILET = 45000;
 
 /* ---------------------------------------------------------------- *
  *  ETAT D'UN MATCH
@@ -3968,6 +3974,11 @@ function VueDirect({ teams, suivies = [] }) {
   const [spoilers, setSpoilers] = useState(false);
   const [histoire, setHistoire] = useState([]);
   const [toutVoir, setToutVoir] = useState(false);
+  /* `pousse` compte les avis de la ligue : les effets qui vont chercher
+     l'etat du match en dependent, donc chaque poussee relance leur requete
+     — et remet du meme coup leur minuteur de repli a zero. */
+  const [pousse, setPousse] = useState(0);
+  const [poussevive, setPoussevive] = useState(false);
 
   /* Changer de match vide le deroule : celui du match precedent n'a plus rien
      a y faire. Fait pendant le rendu et non dans un effet, sinon l'ecran
@@ -4051,6 +4062,26 @@ function VueDirect({ teams, suivies = [] }) {
     };
   }, []);
 
+  /* ------------------------------------------------------------------ *
+     L'ABONNEMENT AUX POUSSEES
+     La ligue previent, lancer par lancer, qu'un match a bouge. On ne
+     l'ecoute que pour un match EN COURS : sur un match termine elle ferme
+     aussitot, poliment (code 4400), et il n'y aurait rien a attendre.
+     Voir `pousse-direct.js` pour ce que la mesure a donne.
+   * ------------------------------------------------------------------ */
+  const fini = enCours.find((g) => g.id === choisi)?.fini;
+  useEffect(() => {
+    if (!choisi || fini) return undefined;
+    const fermer = abonnerPoussees(choisi, {
+      surChangement: () => setPousse((n) => n + 1),
+      surVie: setPoussevive,
+    });
+    /* Le drapeau retombe en quittant le match, et non a l'entree du
+       prochain : sinon un match termine heriterait du filet a 45 s laisse
+       par le match en cours qu'on vient de quitter. */
+    return () => { fermer(); setPoussevive(false); };
+  }, [choisi, fini]);
+
   /* Le match suivi. Un appel filtre a 1,6 Ko, plus 2 Ko de probabilite. */
   useEffect(() => {
     if (!choisi) return;
@@ -4072,14 +4103,16 @@ function VueDirect({ teams, suivies = [] }) {
         .catch(() => {});
     };
     tirer();
-    // Inutile de sonder un match termine : son etat ne bougera plus.
-    const fini = enCours.find((g) => g.id === choisi)?.fini;
-    const id = fini ? null : setInterval(tirer, CADENCE_DIRECT);
+    /* Inutile de sonder un match termine : son etat ne bougera plus. Et
+       quand la poussee vit, le sondage s'espace — il ne sert plus qu'a
+       rattraper ce qu'elle ne dit pas. `pousse` est dans les dependances :
+       chaque avis relance donc la requete et repart d'un minuteur neuf. */
+    const id = fini ? null : setInterval(tirer, poussevive ? CADENCE_FILET : CADENCE_DIRECT);
     return () => {
       annule = true;
       if (id) clearInterval(id);
     };
-  }, [choisi, enCours]);
+  }, [choisi, fini, pousse, poussevive]);
 
   /* Charge seulement si le deroule est demande : il revele tout le match. */
   useEffect(() => {
@@ -4095,7 +4128,7 @@ function VueDirect({ teams, suivies = [] }) {
       annule = true;
       clearInterval(id);
     };
-  }, [choisi, spoilers]);
+  }, [choisi, spoilers, pousse]);
 
   const groupes = useMemo(() => grouperParManche(histoire), [histoire]);
   const totalActions = useMemo(
@@ -4419,7 +4452,11 @@ function VueDirect({ teams, suivies = [] }) {
 
           <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, marginTop: 14 }}>
             {etat.statut}
-            {jeu.fini ? "" : ` · mise à jour toutes les ${CADENCE_DIRECT / 1000} secondes`}
+            {jeu.fini
+              ? ""
+              : poussevive
+                ? " · mise à jour à chaque lancer, poussée par la ligue"
+                : ` · mise à jour toutes les ${CADENCE_DIRECT / 1000} secondes`}
           </p>
         </div>
       )}
