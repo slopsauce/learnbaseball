@@ -1672,7 +1672,7 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
         {ligne(
           "en direct",
           vif
-            ? `${abregeManche(vif)} · ${vif.retraits ?? 0} retrait${(vif.retraits ?? 0) > 1 ? "s" : ""}` +
+            ? `${abregeManche(vif)} · ${retraitsDuDirect(vif)}` +
               (spoilers ? ` · ${vif.ext} – ${vif.dom}` : " · score masqué")
             : null
         )}
@@ -2027,6 +2027,20 @@ const pos = (h) => ((h - DEBUT) / (FIN - DEBUT)) * 100;
 
 /* « 5e ▲ » : manche en cours et moitie. Sans le score, ce n'est pas un
    spoiler — ca dit seulement que le match est en train de se jouer. */
+/* Ce qui se passe a l'instant, sous la pastille : « 2 retraits ». Mais
+   JAMAIS « 3 retraits » : entre deux demi-manches, `inningState` vaut
+   Middle ou End et l'API garde `outs` a 3 — les trois retraits qui
+   viennent de CLORE la demi-manche, pas ceux d'une manche en cours. Les
+   annoncer tels quels laisse croire qu'il reste a jouer dans une manche
+   deja finie, exactement le contresens que ce site cherche a eviter.
+   C'est le meme defaut de lecture que le compte du frappeur, qui gardait
+   lui aussi son etat terminal entre deux presences au bâton. */
+function retraitsDuDirect(v) {
+  if (/^(Middle|End)/.test(v?.moitie || "")) return "changement de côté";
+  const r = v?.retraits ?? 0;
+  return `${r} retrait${r > 1 ? "s" : ""}`;
+}
+
 function abregeManche(v) {
   if (!v?.manche) return "en cours";
   const fleche = /^Top|^Middle/.test(v.moitie || "") ? "▲" : "▼";
@@ -6344,7 +6358,7 @@ function btnStyle(primaire) {
  *  elimine ce qui n'est pas atteint depuis le point d'entree de l'app.
  * --------------------------------------------------------------------- */
 export {
-  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche, purgerReports, HORIZON_JOUR, extraireResumes, sourceLisible,
+  ongletDepuisFragment, choisirMatchDuJour, compteARebours, abregeManche, retraitsDuDirect, purgerReports, HORIZON_JOUR, extraireResumes, sourceLisible,
   VueTerrains, projeter, enM, CONTOUR_US, CARTE_L, CARTE_H,
   cibleDepuisFragment, AffichesDuSoir, LienStade, enPi, distancesCloture, BandeauSituation,
   WIKI_STADES, lienWiki,
