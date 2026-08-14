@@ -146,6 +146,49 @@ describe("les poussées du direct", () => {
     assert.equal(n, 0);
   });
 
+  test("le retour au premier plan reconnecte sans attendre", async () => {
+    /* Un onglet cache voit ses minuteurs brides — jusqu'a un declenchement
+       par minute. Une socket tombee pendant qu'on regardait ailleurs peut
+       donc rester morte bien apres le retour, le temps que l'attente de
+       reconnexion veuille bien s'ecouler. On la court-circuite.
+       `document` n'existe pas sous Node : on le simule le temps du test. */
+    const auditeurs = [];
+    globalThis.document = {
+      visibilityState: "hidden",
+      addEventListener: (t, f) => t === "visibilitychange" && auditeurs.push(f),
+      removeEventListener: (t, f) => {
+        const i = auditeurs.indexOf(f);
+        if (t === "visibilitychange" && i >= 0) auditeurs.splice(i, 1);
+      },
+    };
+    try {
+      FauxWS.ouverts = [];
+      const fermer = abonnerPoussees(823918, { fabrique });
+      dernier().ouvrir();
+      assert.equal(auditeurs.length, 1, "l'abonnement doit écouter le retour au premier plan");
+
+      dernier().fermer(1006);                    // la socket meurt, onglet caché
+      assert.equal(FauxWS.ouverts.length, 1);
+      // Onglet toujours caché : le retour ne se déclenche pas.
+      auditeurs[0]();
+      assert.equal(FauxWS.ouverts.length, 1, "un onglet caché ne doit rien relancer");
+
+      globalThis.document.visibilityState = "visible";
+      auditeurs[0]();
+      assert.equal(FauxWS.ouverts.length, 2, "le retour au premier plan doit reconnecter tout de suite");
+
+      // Et sur une socket vivante, le retour ne rouvre rien.
+      dernier().ouvrir();
+      auditeurs[0]();
+      assert.equal(FauxWS.ouverts.length, 2, "une socket vivante ne doit pas être doublée");
+
+      fermer();
+      assert.equal(auditeurs.length, 0, "l'auditeur doit être retiré à la fermeture");
+    } finally {
+      delete globalThis.document;
+    }
+  });
+
   test("un navigateur qui refuse le WebSocket ne fait pas tomber la vue", async () => {
     /* Réseau d'entreprise, extension, mode restreint : le constructeur peut
        lever. La vue doit l'apprendre et garder son sondage, pas planter. */

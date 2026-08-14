@@ -4099,6 +4099,24 @@ function VueDirect({ teams, suivies = [] }) {
     return () => { fermer(); setPoussevive(false); };
   }, [choisi, fini]);
 
+  /* AU RETOUR AU PREMIER PLAN, on rafraichit sans attendre.
+     Le WebSocket reste ouvert dans un onglet cache et ses messages
+     arrivent — mais la requete qu'ils declenchent passe par un minuteur,
+     et les navigateurs les brident quand l'onglet n'est pas regarde :
+     Chrome descend a un declenchement par seconde apres quelques
+     secondes, puis a un par minute au-dela de cinq. Le sondage de repli
+     et la reconnexion en dependent aussi. Sans ce reveil, on revenait sur
+     un match vieux de plusieurs dizaines de secondes, le temps que le
+     prochain tic bride veuille bien partir.
+     Incrementer `pousse` suffit : c'est deja ce qui relance la requete. */
+  useEffect(() => {
+    const surRetour = () => {
+      if (document.visibilityState === "visible") setPousse((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", surRetour);
+    return () => document.removeEventListener("visibilitychange", surRetour);
+  }, []);
+
   /* Le match suivi. Un appel filtre a 1,6 Ko, plus 2 Ko de probabilite. */
   useEffect(() => {
     if (!choisi) return;

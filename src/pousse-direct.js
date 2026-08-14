@@ -127,13 +127,30 @@ export function abonnerPoussees(gamePk, { surChangement, surVie, fabrique } = {}
     };
   };
 
+  /* AU RETOUR AU PREMIER PLAN, on ne laisse pas courir une attente de
+     reconnexion qui peut atteindre trente secondes. Un onglet cache voit
+     ses minuteurs brides — jusqu'a un declenchement par minute — donc une
+     socket tombee pendant qu'on regardait ailleurs peut rester morte bien
+     apres le retour. Le navigateur vient de debrider : autant reconnecter
+     tout de suite, et repartir du delai le plus court. */
+  const doc = typeof document === "undefined" ? null : document;
+  const surRetour = () => {
+    if (arrete || ws || doc.visibilityState !== "visible") return;
+    clearTimeout(minuteurReprise);
+    minuteurReprise = null;
+    attente = ATTENTE_MIN;
+    connecter();
+  };
+
   connecter();
+  doc?.addEventListener("visibilitychange", surRetour);
 
   return () => {
     arrete = true;
     clearTimeout(minuteurFusion);
     clearTimeout(minuteurReprise);
     minuteurFusion = minuteurReprise = null;
+    doc?.removeEventListener("visibilitychange", surRetour);
     try { ws?.close(); } catch { /* deja fermee */ }
     ws = null;
   };
