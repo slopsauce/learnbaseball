@@ -572,6 +572,20 @@ describe("le direct", () => {
     assert.equal(A.abregeManche(null), "en cours");
     assert.equal(A.abregeManche({}), "en cours");
   });
+
+  test("n'annonce pas trois retraits dans une manche en cours", () => {
+    /* Meme defaut de lecture que le compte du frappeur : entre deux
+       demi-manches, `inningState` vaut Middle ou End et l'API garde `outs`
+       a 3 — les trois retraits qui viennent de CLORE la demi-manche.
+       Releve sur BOS @ PIT : deux minutes a « 3 retraits » alors que plus
+       rien ne se jouait. */
+    assert.equal(A.retraitsDuDirect({ moitie: "Top", retraits: 2 }), "2 retraits");
+    assert.equal(A.retraitsDuDirect({ moitie: "Bottom", retraits: 1 }), "1 retrait");
+    assert.equal(A.retraitsDuDirect({ moitie: "Middle", retraits: 3 }), "changement de côté");
+    assert.equal(A.retraitsDuDirect({ moitie: "End", retraits: 3 }), "changement de côté");
+    // Une reponse incomplete ne doit pas inventer de retraits.
+    assert.equal(A.retraitsDuDirect(null), "0 retrait");
+  });
 });
 
 describe("doublons de matchs reportés", () => {

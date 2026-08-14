@@ -385,6 +385,21 @@ describe("vue Le direct", () => {
     assert.match(html, /retraits/);
   });
 
+  test("le compte retombe à zéro entre deux frappeurs", () => {
+    /* L'API ne renvoie pas un compte mais l'ETAT TERMINAL de la presence au
+       bâton : sur un retrait sur prises, `linescore` porte 0-3 — trois
+       prises — et le garde jusqu'a ce que le frappeur suivant se presente.
+       Releve sur BOS @ PIT : deux minutes et huit secondes a afficher
+       « 0-3, 3 retraits », changement de côté compris. La rangee des prises
+       n'ayant que deux pastilles, elle se montrait pleine tout du long.
+       C'est `about.isComplete` qui distingue les deux situations. */
+    const pleines = (h) => (h.match(/background:#C2603A/gi) || []).length;
+    const enCours = rendre(React.createElement(Compteurs, { balles: 0, prises: 2, retraits: 2 }));
+    const entreDeux = rendre(React.createElement(Compteurs, { balles: 0, prises: 0, retraits: 3 }));
+    assert.ok(pleines(enCours) > 0, "deux prises doivent allumer des pastilles");
+    assert.equal(pleines(entreDeux), 0, "entre deux frappeurs, aucune prise ne doit rester allumée");
+  });
+
   test("le tableau par manche affiche R, H et E", () => {
     const html = rendre(React.createElement(TableauManches, {
       innings: [{ num: 1, home: { runs: 0 }, away: { runs: 1 } }, { num: 2, home: { runs: 2 }, away: { runs: 0 } }],
