@@ -3726,7 +3726,10 @@ function Ligne({ k, v }) {
  *  toutes les vingt secondes environ.
  * ================================================================== */
 const CHAMPS_DIRECT = [
-  "liveData", "plays", "currentPlay", "result", "description", "linescore",
+  // `about` ne ramene que `isComplete` sous ce filtre : c'est lui qui dit
+  // qu'une presence au bâton est finie, et donc que le compte affiche est
+  // celui de la presence PRECEDENTE. Voir `Compteurs` a l'usage.
+  "liveData", "plays", "currentPlay", "about", "isComplete", "result", "description", "linescore",
   "currentInning", "currentInningOrdinal", "inningState", "balls", "strikes", "outs",
   "teams", "home", "away", "runs", "hits", "errors", "innings", "num", "ordinalNum",
   "offense", "defense", "first", "second", "third", "batter", "pitcher", "onDeck",
@@ -4097,6 +4100,9 @@ function VueDirect({ teams, suivies = [] }) {
             l: f?.liveData?.linescore || null,
             fait: f?.liveData?.plays?.currentPlay?.result?.description || null,
             statut: f?.gameData?.status?.detailedState || null,
+            /* Entre deux frappeurs. Sans ce drapeau, le compte affiche
+               reste celui de la presence qui vient de s'achever. */
+            entreDeux: !!f?.liveData?.plays?.currentPlay?.about?.isComplete,
           });
           setProba(c?.homeWinProbability ?? null);
         })
@@ -4314,7 +4320,20 @@ function VueDirect({ teams, suivies = [] }) {
           {!jeu.fini && (
           <div style={{ display: "flex", gap: 22, flexWrap: "wrap", alignItems: "center" }}>
             <BasesOccupees off={L.offense} />
-            <Compteurs balles={L.balls} prises={L.strikes} retraits={L.outs} />
+            {/* LE COMPTE EST REMIS A ZERO ENTRE DEUX FRAPPEURS. L'API ne
+                renvoie pas un compte mais l'ETAT TERMINAL de la presence au
+                bâton : sur un retrait sur prises, `linescore` porte 0-3 —
+                trois prises — et le garde jusqu'a ce que le frappeur suivant
+                se presente. Releve sur un match : deux minutes et huit
+                secondes a afficher « 0-3, 3 retraits », changement de côté
+                compris, avec une rangee de prises qui n'a que deux pastilles
+                et se montrait donc pleine. Les retraits, eux, sont bien
+                ceux de la manche en cours : on n'y touche pas. */}
+            <Compteurs
+              balles={etat.entreDeux ? 0 : L.balls}
+              prises={etat.entreDeux ? 0 : L.strikes}
+              retraits={L.outs}
+            />
 
             <div style={{ fontFamily: FF_MONO, fontSize: 11, display: "grid", gap: 4, minWidth: 0 }}>
               <div>
