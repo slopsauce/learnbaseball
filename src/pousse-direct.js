@@ -29,6 +29,57 @@
  *  appeler `surChangement` quand il y a lieu.
  * ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ *
+ *  CE QU'ON N'A PAS FAIT, ET POURQUOI
+ *  Le flux de direct s'appelle GUMBO — « Grand Unified Master Baseball
+ *  Object ». MLB en decrit ainsi le principe, dans la documentation
+ *  qu'elle publie pour son concours de developpeurs :
+ *
+ *    « Unlike previous live event data feeds, GUMBO provides complete
+ *      game information with every object creation, rather than
+ *      incremental updates »
+ *
+ *  avec, en benefice affiche, « no need to maintain game state locally or
+ *  build upon message sequences ». Le format est donc concu pour
+ *  l'INSTANTANE, pas pour le differentiel. Ce qui suit en decoule.
+ *
+ *  `feed/live/diffPatch` : ecarte, apres mesure sur un match en cours.
+ *
+ *      feed/live complet ................ 451 967 o  (68 790 gzip)
+ *      feed/live filtre — ce qu'on fait ... 1 418 o  (   531 gzip)
+ *      diffPatch depuis un timecode ....... 2 588 o  (   510 gzip)
+ *      diffPatch AVEC fields ............ 456 422 o  (69 011 gzip)
+ *
+ *  Trois raisons, dans l'ordre ou elles tuent l'idee : `fields` est
+ *  IGNORE sur diffPatch — la derniere ligne le montre ; la reponse
+ *  recue portait `logicalEvents: ["fullUpdate"]` et un `gameData`
+ *  complet, donc MLB renvoie tout des que le diff est trop gros ou le
+ *  timecode trop vieux ; et il faudrait tenir une copie locale du flux
+ *  entier pour y appliquer les patchs. Pour une vue qui affiche dix
+ *  champs, l'instantane filtre est deja au plancher, et il est SANS
+ *  ETAT. On echangerait vingt octets gzip dans le meilleur cas contre
+ *  une copie a maintenir et un chemin de repli a 450 Ko.
+ *
+ *  LA CADENCE. MLB recommande de sonder toutes les 12 secondes ; on
+ *  etait a 15, la poussee nous met desormais devant. Elle annonce aussi
+ *  le WebSocket a « push updates every 1-2 seconds » : ce n'est PAS ce
+ *  qu'on observe — dix poussees en 120 s sur une sequence animee, soit
+ *  une toutes les douze secondes. Ce « 1-2 s » decrit vraisemblablement
+ *  l'espacement minimal, et c'est sur lui qu'est cale le plancher de
+ *  deux secondes ci-dessus.
+ *
+ *  CE QUI RESTE A PRENDRE, et qu'on n'utilise pas encore : les deux
+ *  autres adresses que la meme documentation recommande.
+ *
+ *      /feed/live/timestamps ...... 206 horodatages, 3 709 o (614 gzip)
+ *      /feed/live?timecode=…&fields=… ................... 135 o
+ *
+ *  Ici `fields` fonctionne. On peut donc rembobiner un match et le
+ *  rejouer instant par instant pour quelques centaines d'octets par pas
+ *  — ce qui colle a la premisse du site : quelqu'un qui se leve apres le
+ *  match.
+ * ------------------------------------------------------------------ */
+
 export const URL_POUSSEE = "wss://ws.statsapi.mlb.com/api/v1/game/push/subscribe/gameday/";
 
 /* Les deux fermetures que la ligue prononce elle-meme, et sur lesquelles

@@ -4992,6 +4992,13 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
 /* Le filtre `fields` fait tomber un play-by-play de 610 Ko a 32. C'est ce
    qui rend l'option « toute la nuit » — une quinzaine de matchs —
    envisageable au lieu d'etre absurde. */
+/* Cette vue ne peut pas remonter avant 2015, et ce n'est pas un choix :
+   la profondeur des donnees change par epoque, telle que MLB la publie —
+   feuille de match de 1901 a 1968, jeu par jeu jusqu'en 1988, lancer par
+   lancer jusqu'en 2007, PITCHf/x jusqu'en 2014, et les mesures Statcast
+   (vitesse de sortie, angle d'envol) SEULEMENT a partir de 2015. Or ce
+   sont exactement `launchSpeed` et `launchAngle` qui font vivre cet
+   onglet : sans eux, il n'y a pas de trajectoire a calculer. */
 const CHAMPS_CIRCUITS =
   "allPlays,result,eventType,description,rbi,about,inning,halfInning," +
   "matchup,batter,id,fullName,playEvents,playId,hitData,launchSpeed,launchAngle," +
