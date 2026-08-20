@@ -5203,12 +5203,24 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
   const stade = idStade ? stades[idStade] : null;
   const [parc, setParc] = useState(null);
 
+  /* Le choix venu de la scene : cliquer une trajectoire fait exactement ce
+     que fait toucher sa ligne dans la liste — meme etat, meme bascule. */
+  const surChoixScene = useCallback(
+    (i) =>
+      setOuvert((prev) => {
+        const cle = circuits[i]?.cle;
+        return cle === undefined ? prev : prev === cle ? null : cle;
+      }),
+    [circuits]
+  );
+
   return (
     <div className="alm-rise">
       <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 16px" }}>
         Un circuit est la seule action dont on connaisse le vol de bout en bout : la ligue publie la
         vitesse de sortie, l'angle d'envol, la distance et le point de chute. Le reste — la courbe
-        entre les deux — se calcule. Touche un circuit pour le suivre.
+        entre les deux — se calcule. Touche un circuit, dans la scène ou dans la liste, pour le
+        suivre.
       </p>
 
       <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
@@ -5296,6 +5308,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             stade={stade}
             ouvert={ouvert}
             onParc={setParc}
+            onChoisir={surChoixScene}
           />
 
           <div style={{ display: "grid", gap: 8, marginTop: 14 }}>
@@ -5510,7 +5523,7 @@ function ClipCircuit({ circuit }) {
    c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
    n'execute pas les effets, donc rien de tout cela ne part en cascade dans
    les tests ou dans une prerendue. */
-function SceneCircuits({ circuits, idStade, stade, ouvert, onParc }) {
+function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) {
   const boite = useRef(null);
   const poignee = useRef(null);
   const [etat, setEtat] = useState("attente"); // attente | prete | refus
@@ -5529,6 +5542,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc }) {
           idStade,
           stade,
           animer: doux.current,
+          surChoix: onChoisir,
         });
         setEtat("prete");
         onParc?.(poignee.current.parc);
@@ -5539,7 +5553,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc }) {
       poignee.current?.detruire();
       poignee.current = null;
     };
-  }, [circuits, idStade, stade, onParc]);
+  }, [circuits, idStade, stade, onParc, onChoisir]);
 
   useEffect(() => {
     const i = circuits.findIndex((c) => c.cle === ouvert);

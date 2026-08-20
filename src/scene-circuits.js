@@ -15,6 +15,7 @@ import {
   Mesh, Group, Line, Sprite, SpriteMaterial, CanvasTexture,
   BufferGeometry, Float32BufferAttribute, CircleGeometry, ShapeGeometry,
   CylinderGeometry, PlaneGeometry, SphereGeometry, TubeGeometry, CatmullRomCurve3,
+  Raycaster, Vector2,
   MeshLambertMaterial, MeshBasicMaterial, LineBasicMaterial, LineSegments,
   HemisphereLight, DirectionalLight, DoubleSide, Clock,
 } from "three";
@@ -429,9 +430,13 @@ function rubanSol(interieur, exterieur, h, couleur) {
  *  MONTAGE
  *  `circuits` : [{ points: [[x,y,z] en pieds], couleur }]
  *  `mur`      : polyligne du parc, en pieds, ou null
+ *  `surChoix` : appele avec l'indice de la trajectoire cliquee dans la
+ *               scene. La scene ne garde pas ce choix : c'est la vue qui
+ *               decide, et qui rappelle `choisir` — le meme chemin que la
+ *               liste sous la scene, pour qu'il n'y en ait qu'un.
  *  Rend une poignee : { choisir, redimensionner, detruire }.
  * ------------------------------------------------------------------ */
-export function monterScene(conteneur, { circuits, idStade, stade, animer = true }) {
+export function monterScene(conteneur, { circuits, idStade, stade, animer = true, surChoix }) {
   const parc = construireMur(idStade, stade);
   const mur = parc.mur;
   const gradins = parc.contour ? tribunes(parc.contour, stade || {}) : null;
@@ -601,7 +606,8 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
   }
 
   // --- les trajectoires ---
-  const tracés = circuits.map(({ points, couleur }) => {
+  const prises = [];
+  const tracés = circuits.map(({ points, couleur }, indice) => {
     const v = points.map(([x, y, z]) => V(x, y, z));
     const tube = new Mesh(
       new TubeGeometry(new CatmullRomCurve3(v), Math.min(160, v.length * 2), 0.9, 6, false),
@@ -617,6 +623,19 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
     chute.position.set(fin[0], 0.7, -fin[1]);
     const grp = new Group();
     grp.add(tube, ombre, chute);
+    /* La zone de prise : le tube dessine fait moins d'un pied de rayon —
+       introuvable a la souris, impossible au doigt. Chaque trajectoire
+       porte donc un second tube, invisible et large de sept pieds, qui ne
+       sert qu'a etre vise par le rayon du clic. */
+    if (surChoix) {
+      const prise = new Mesh(
+        new TubeGeometry(new CatmullRomCurve3(v), Math.min(80, v.length), 7, 4, false),
+        new MeshBasicMaterial({ visible: false })
+      );
+      prise.userData.indice = indice;
+      grp.add(prise);
+      prises.push(prise);
+    }
     scene.add(grp);
     return { tube, v };
   });
@@ -626,11 +645,42 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
   scene.add(balle);
 
   // --- pilotage a la souris et au doigt ---
-  let glisse = false, px = 0, py = 0, pince = 0;
-  const surDebut = (e) => { glisse = true; px = e.clientX; py = e.clientY; };
-  const surFin = () => { glisse = false; };
+  /* Le rayon du clic, partage entre le choix et le survol. Il ne vise que
+     les zones de prise : viser toute la scene ferait aussi mouche sur les
+     tribunes et le mur, qui ne se choisissent pas. */
+  const viseur = new Raycaster();
+  const viser = (e) => {
+    const r = renderer.domElement.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    viseur.setFromCamera(
+      new Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1),
+      camera
+    );
+    return viseur.intersectObjects(prises)[0] || null;
+  };
+
+  let glisse = false, px = 0, py = 0, pince = 0, parcouru = 0;
+  const surDebut = (e) => { glisse = true; parcouru = 0; px = e.clientX; py = e.clientY; };
+  /* Un clic est un glisse qui n'a pas bouge : sous le seuil, on ne tourne
+     pas la camera, on choisit. Le doigt tremble plus que la souris — six
+     pixels absorbent l'un comme l'autre. Deux doigts, c'est une pince,
+     jamais un choix. */
+  const surFin = (e) => {
+    if (glisse && surChoix && parcouru < 6 && pince === 0 && e.target === renderer.domElement) {
+      const touche = viser(e);
+      if (touche) surChoix(touche.object.userData.indice);
+    }
+    glisse = false;
+  };
   const surBouge = (e) => {
-    if (!glisse) return;
+    if (!glisse) {
+      // Le curseur dit qu'une trajectoire est cliquable avant qu'on essaie.
+      if (surChoix && e.target === renderer.domElement) {
+        renderer.domElement.style.cursor = viser(e) ? "pointer" : "";
+      }
+      return;
+    }
+    parcouru += Math.abs(e.clientX - px) + Math.abs(e.clientY - py);
     theta -= (e.clientX - px) * 0.005;
     phi -= (e.clientY - py) * 0.005;
     px = e.clientX; py = e.clientY;
