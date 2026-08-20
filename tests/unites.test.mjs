@@ -2088,6 +2088,32 @@ describe("le tracé des parcs", () => {
         `${t.n} : l'arc ne finit pas sur les poteaux (${ang[0].toFixed(1)}° → ${ang[ang.length - 1].toFixed(1)}°)`);
     }
   });
+
+  test("la piste d'avertissement reste dans le parc, d'un poteau à l'autre", () => {
+    /* La piste de Coors Field portait un sommet a (5888, −5622) — le
+       generateur avait pris le mauvais troncon du releve, puis fait
+       exploser l'interpolation d'un croisement quasi parallele a la ligne
+       de faute. A l'ecran, le ruban de terre battue s'etirait sur des
+       milliers de pieds hors du stade. Une piste valide tient entre les
+       lignes de faute, a une distance de terrain de baseball, et couvre le
+       champ jusqu'au centre. */
+    for (const t of Object.values(TRACES)) {
+      if (!t.p.length) continue;
+      const ang = [];
+      for (let i = 0; i < t.p.length; i += 2) {
+        const [x, y] = [t.p[i], t.p[i + 1]];
+        const r = Math.hypot(x, y);
+        assert.ok(r > 40 && r < 200, `${t.n} : point de piste à ${r.toFixed(0)} unités du marbre`);
+        ang.push(Math.atan2(x, y) * (180 / Math.PI));
+      }
+      for (const a of ang)
+        assert.ok(Math.abs(a) < 45.5, `${t.n} : point de piste hors des lignes de faute (${a.toFixed(1)}°)`);
+      // Les extremites sont posees sur les lignes, et le champ centre couvert.
+      assert.ok(Math.abs(ang[0] + 45) < 0.3 && Math.abs(ang[ang.length - 1] - 45) < 0.3,
+        `${t.n} : la piste ne va pas d'un poteau à l'autre (${ang[0].toFixed(1)}° → ${ang[ang.length - 1].toFixed(1)}°)`);
+      assert.ok(ang.some((a) => Math.abs(a) < 12), `${t.n} : la piste ne passe pas par le champ centre`);
+    }
+  });
 });
 
 /* Les tribunes vivent dans le morceau three.js, mais leur geometrie est du
