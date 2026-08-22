@@ -2276,7 +2276,7 @@ function BandeauSituation({ situation, spoilers, onAfficher }) {
                     texte="Nombre d'éliminations : les défaites de cette équipe, ajoutées aux victoires du meneur, qui la sortiraient définitivement de la course à la division. C'est exactement le même calcul que le nombre magique, vu depuis l'autre camp."
                     style={{ marginLeft: "auto", color: T.dim, display: "inline-block" }}
                   >
-                    élimination {b.elimination}
+                    {b.elimination === 0 ? "éliminée" : `élimination ${b.elimination}`}
                   </Glose>
                 )}
               </div>
@@ -5654,6 +5654,287 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
 }
 
 /* ================================================================== *
+ *  VUE « LE CLASSEMENT »
+ *  La course telle que la MLB la juge : six qualifiees par ligue, les
+ *  trois championnes de division puis trois wild cards — les meilleures
+ *  du reste, divisions confondues. La vue montre exactement cela, et
+ *  rien d'autre : pas de tableau par division, deja esquisse dans les
+ *  fiches d'equipes, mais la LIGNE, celle qui separe une saison
+ *  d'octobre d'une saison d'aout.
+ * ------------------------------------------------------------------ */
+/* L'API ecrit les ecarts en chaines : « - » quand la valeur est sans
+   objet, « 9.5 » pour un retard, « +9.5 » pour une AVANCE sur la ligne
+   du wild card. Number() avale le « + » sans broncher et perdait donc le
+   signe : une equipe confortablement au-dessus de la ligne passait pour
+   etre a neuf matchs et demi derriere. L'avance est stockee en NEGATIF,
+   pour que « wc <= 0 » signifie partout « en position qualifiee ». */
+function lireEcart(x) {
+  if (x == null || x === "-") return null;
+  const s = String(x);
+  return s.startsWith("+") ? -Number(s.slice(1)) : Number(s);
+}
+
+/* Nombres magiques et d'elimination : « E » veut dire elimine — le compte
+   est tombe a zero. Number("E") donnait NaN, qui passait tous les
+   « != null » et s'affichait tel quel. */
+function lireCompte(x) {
+  if (x == null || x === "-") return null;
+  return x === "E" ? 0 : Number(x);
+}
+
+const LIGUE_FR = { 103: "Ligue américaine", 104: "Ligue nationale" };
+
+/* « American League East » → « Est » : dans un bloc deja titre du nom de
+   la ligue, repeter AL ou NL sur chaque ligne ne dirait rien de plus. */
+const divisionCourte = (n = "") => DIVISION_FR(n).replace(/^(AL|NL)\s*/, "");
+
+/* .594 plutot que 0.594 : c'est l'ecriture du baseball. */
+const pctCourt = (p) => (p != null && isFinite(p) ? p.toFixed(3).replace(/^0/, "") : "—");
+
+/* Retard positif, avance negative — voir lireEcart. Affiche comme sur les
+   tableaux officiels : « +1.5 » au-dessus de la ligne, « 1.5 » dessous. */
+const ecartWc = (b) =>
+  b?.wc == null ? "" : b.wc <= 0 ? `+${(-b.wc).toFixed(1)}` : b.wc.toFixed(1);
+
+/* Repartit les trente franchises comme la MLB les departage : par ligue,
+   les meneurs de division tries par bilan (l'ordre des tetes de serie),
+   et tous les autres dans la course au wild card, tries par le rang que
+   l'API calcule — il departage les egalites d'ecart mieux qu'on ne
+   saurait le refaire d'ici. Une equipe sans bilan (debut de saison, ou
+   reponse incomplete) tombe en fin de course plutot que de disparaitre. */
+function classementLigues(teams = [], bilans = {}) {
+  const ligues = { 103: { meneurs: [], chasse: [] }, 104: { meneurs: [], chasse: [] } };
+  for (const eq of teams) {
+    const nomDiv = eq.division?.name || "";
+    const ligue = nomDiv.startsWith("American") ? 103 : nomDiv.startsWith("National") ? 104 : null;
+    if (!ligue) continue;
+    const b = bilans[eq.id] || null;
+    (b?.meneur ? ligues[ligue].meneurs : ligues[ligue].chasse).push({ eq, b });
+  }
+  const parPct = (a, z) =>
+    (z.b?.pct || 0) - (a.b?.pct || 0) || a.eq.name.localeCompare(z.eq.name);
+  for (const l of Object.values(ligues)) {
+    l.meneurs.sort(parPct);
+    l.chasse.sort((a, z) => {
+      const ra = a.b?.wcRang ?? Infinity, rz = z.b?.wcRang ?? Infinity;
+      if (ra !== rz) return ra - rz;
+      const wa = a.b?.wc ?? Infinity, wz = z.b?.wc ?? Infinity;
+      if (wa !== wz) return wa - wz;
+      return parPct(a, z);
+    });
+  }
+  return ligues;
+}
+
+/* La ligne des series : trois places au-dessus, rien en dessous. La Glose
+   au milieu explique la lecture des ecarts — c'est ici qu'on se le
+   demande, pas dans l'introduction. */
+function LaLigne() {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8,
+        margin: "3px 0", fontFamily: FF_MONO, fontSize: 9,
+        color: T.sodium, letterSpacing: ".18em",
+      }}
+    >
+      <span aria-hidden="true" style={{ flex: 1, borderTop: `1px dashed ${T.sodium}` }} />
+      <Glose texte="Au-dessus de la ligne, les trois wild cards de la ligue ; en dessous, on regarde les séries à la télévision. « +1.5 » se lit : un match et demi d'avance sur la première équipe sous la ligne. Un match d'écart se comble par une victoire de l'une combinée à une défaite de l'autre.">
+        LA LIGNE
+      </Glose>
+      <span aria-hidden="true" style={{ flex: 1, borderTop: `1px dashed ${T.sodium}` }} />
+    </div>
+  );
+}
+
+/* Une ligne du tableau. C'est un bouton : elle ouvre la fiche de la
+   franchise, par le fragment, comme les stades — le lien reste
+   partageable et « precedent » fonctionne seul. Pas de Glose dans la
+   ligne : un bouton dans un bouton n'est pas du HTML. */
+function LigneClassement({ eq, b, etiquette, ecart, fort = false, terne = false, suivie = false }) {
+  const s = libelleSerie(b);
+  const aller = () => {
+    try {
+      if (typeof window !== "undefined") window.location.hash = `equipes/${eq.id}`;
+    } catch {
+      /* contexte restreint */
+    }
+  };
+  return (
+    <button
+      className="alm-btn"
+      onClick={aller}
+      title={`Ouvrir la fiche : ${eq.name}`}
+      style={{
+        all: "unset", cursor: "pointer", boxSizing: "border-box", width: "100%",
+        display: "flex", alignItems: "center", gap: 9,
+        background: suivie ? "rgba(242,206,107,.08)" : "rgba(11,36,26,.5)",
+        borderRadius: 3, padding: "7px 11px",
+        fontFamily: FF_MONO, fontSize: 11,
+        opacity: terne ? 0.55 : 1,
+      }}
+    >
+      <span
+        style={{
+          width: 48, flexShrink: 0, color: T.dim, fontSize: 9,
+          letterSpacing: ".08em", textTransform: "uppercase",
+        }}
+      >
+        {etiquette}
+      </span>
+      <Img src={CAP(eq.id)} alt="" size={22} />
+      <span
+        style={{
+          color: suivie ? T.sodium : T.chalk, fontWeight: suivie ? 700 : 400,
+          flex: 1, minWidth: 0, overflow: "hidden",
+          textOverflow: "ellipsis", whiteSpace: "nowrap", textAlign: "left",
+        }}
+      >
+        {eq.name}
+      </span>
+      {s && (
+        <span
+          title={`Série en cours : ${s.texte}.`}
+          style={{
+            flexShrink: 0,
+            color: s.chaud ? (s.gagne ? T.sodium : T.clay) : T.dim,
+            fontWeight: s.chaud ? 700 : 400,
+          }}
+        >
+          {s.court}
+        </span>
+      )}
+      <span style={{ color: T.chalk, fontWeight: 700, width: 46, textAlign: "right", flexShrink: 0 }}>
+        {b ? `${b.v}-${b.d}` : "—"}
+      </span>
+      <span style={{ color: T.dim, width: 36, textAlign: "right", flexShrink: 0 }}>
+        {pctCourt(b?.pct)}
+      </span>
+      <span
+        style={{
+          color: fort ? T.sodium : T.dim, fontWeight: fort ? 700 : 400,
+          minWidth: 44, textAlign: "right", flexShrink: 0,
+        }}
+      >
+        {ecart}
+      </span>
+    </button>
+  );
+}
+
+const ETIQUETTE_BLOC = {
+  fontFamily: FF_MONO, fontSize: 10, letterSpacing: ".18em",
+  color: T.sodium, margin: "0 0 8px",
+};
+
+function BlocLigue({ nom, meneurs, chasse, suivies }) {
+  return (
+    <section style={{ marginBottom: 34 }}>
+      <h2
+        style={{
+          fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 27, lineHeight: 1,
+          textTransform: "uppercase", margin: "0 0 12px", letterSpacing: ".02em",
+        }}
+      >
+        {nom}
+      </h2>
+
+      <div style={ETIQUETTE_BLOC}>EN TÊTE DE DIVISION</div>
+      <div style={{ display: "grid", gap: 6, marginBottom: 16 }}>
+        {meneurs.map(({ eq, b }) => (
+          <LigneClassement
+            key={eq.id}
+            eq={eq}
+            b={b}
+            etiquette={divisionCourte(eq.division?.name)}
+            ecart={b?.clinche ? "qualifiée" : b?.magique != null ? `magique ${b.magique}` : ""}
+            fort={!!b && (b.clinche || b.magique != null)}
+            suivie={suivies.includes(eq.id)}
+          />
+        ))}
+      </div>
+
+      <div style={ETIQUETTE_BLOC}>LA COURSE AU WILD CARD</div>
+      <div style={{ display: "grid", gap: 6 }}>
+        {chasse.map(({ eq, b }, i) => {
+          const elim = !!b && b.elimWc === 0;
+          return (
+            <React.Fragment key={eq.id}>
+              {i === 3 && <LaLigne />}
+              <LigneClassement
+                eq={eq}
+                b={b}
+                etiquette={divisionCourte(eq.division?.name)}
+                ecart={elim ? "éliminée" : b?.clinche ? "qualifiée" : ecartWc(b)}
+                fort={!!b && !elim && (b.clinche || (b.wc != null && b.wc <= 0))}
+                terne={elim}
+                suivie={suivies.includes(eq.id)}
+              />
+            </React.Fragment>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies = [] }) {
+  const ligues = useMemo(() => classementLigues(teams, bilans), [teams, bilans]);
+  const pret = teams.length > 0 && Object.keys(bilans).length > 0;
+
+  return (
+    <div className="alm-rise">
+      <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 8px" }}>
+        Qui serait en séries si la saison s'arrêtait cette nuit. Chaque ligue qualifie six
+        équipes : les trois championnes de division, têtes de série dans l'ordre de leur bilan,
+        puis trois wild cards — les trois meilleures du reste, toutes divisions confondues.
+        Gagner sa division reste le vrai lot : les wild cards commencent octobre en déplacement.
+      </p>
+      <p
+        style={{
+          fontFamily: FF_MONO, fontSize: 10, color: T.dim,
+          lineHeight: 1.7, margin: "0 0 22px",
+        }}
+      >
+        Chaque ligne ouvre la fiche de la franchise. Bilan en victoires-défaites, puis la
+        proportion de victoires — .500, c'est une victoire sur deux.
+      </p>
+
+      {/* Meme note que le programme : hors saison, ces bilans sont ceux de
+          l'annee derniere, et un classement final n'est pas une course. */}
+      {saisonBilans != null && saisonBilans !== new Date().getFullYear() && (
+        <p
+          style={{
+            fontFamily: FF_MONO, fontSize: 10.5, color: T.sodium,
+            border: "1px dashed rgba(242,206,107,.45)", borderRadius: 3,
+            padding: "8px 12px", margin: "0 0 18px", lineHeight: 1.5,
+          }}
+        >
+          Hors saison : ce classement est celui de {saisonBilans}, à son dernier jour. Il ne
+          décrit pas une course en cours.
+        </p>
+      )}
+
+      {!pret ? (
+        <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>
+          Le classement n'est pas encore arrivé.
+        </p>
+      ) : (
+        [103, 104].map((lg) => (
+          <BlocLigue
+            key={lg}
+            nom={LIGUE_FR[lg]}
+            meneurs={ligues[lg].meneurs}
+            chasse={ligues[lg].chasse}
+            suivies={suivies}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+/* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
 /* ------------------------------------------------------------------ *
@@ -5670,16 +5951,20 @@ const ALIAS = {
   equipes: "equipes", equipe: "equipes", effectif: "equipes", roster: "equipes", joueurs: "equipes",
   circuits: "circuits", hr: "circuits", "home-runs": "circuits", homeruns: "circuits",
   direct: "direct", live: "direct", "en-cours": "direct",
+  classement: "classement", standings: "classement", rangs: "classement",
+  "wild-card": "classement", wildcard: "classement",
 };
 const FRAGMENT = {
   nuits: "programme", carnet: "carnet", terrains: "terrains",
   equipes: "equipes", circuits: "circuits", direct: "direct",
+  classement: "classement",
 };
 
 /* Ce que porte l'onglet du navigateur, et donc l'entree d'historique. */
 const TITRE_ONGLET = {
   carnet: "Le carnet",
   nuits: "Le programme",
+  classement: "Le classement",
   terrains: "Les terrains",
   equipes: "Les équipes",
   circuits: "Les circuits",
@@ -6099,18 +6384,33 @@ export default function App() {
         for (const tr of rec.teamRecords || []) {
           const n = (tr.wins || 0) + (tr.losses || 0);
           if (n <= 0) continue;
-          // L'API renvoie "-" plutot que null quand la valeur ne s'applique pas.
-          const nb = (x) => (x == null || x === "-" ? null : Number(x));
+          /* Les ecarts et les comptes arrivent en chaines, avec « - », « + »
+             et « E » comme cas particuliers — voir lireEcart et lireCompte,
+             pres de la vue du classement. */
+          const wcRang = tr.wildCardRank ? Number(tr.wildCardRank) : null;
+          const wcBrut = lireEcart(tr.wildCardGamesBack);
+          /* La detentrice de la DERNIERE place wild card est la reference de
+             tous les ecarts : l'API lui met « - », comme si la question ne se
+             posait pas. Si — et la reponse est zero : elle EST la ligne. Sans
+             ce rattrapage, la seule equipe dont la place se joue vraiment
+             etait aussi la seule sans ecart affiche, et passait pour hors
+             course partout ou « wc » sert d'enjeu. */
+          const wc =
+            wcBrut == null && !tr.divisionLeader && wcRang != null && wcRang <= 3
+              ? 0
+              : wcBrut;
           m[tr.team.id] = {
             v: tr.wins,
             d: tr.losses,
             pct: tr.wins / n,
             rang: tr.divisionRank ? Number(tr.divisionRank) : null,
             meneur: !!tr.divisionLeader,
-            retard: nb(tr.gamesBack),
-            wc: nb(tr.wildCardGamesBack),
-            magique: nb(tr.magicNumber),
-            elimination: nb(tr.eliminationNumber),
+            retard: lireEcart(tr.gamesBack),
+            wc,
+            wcRang,
+            magique: lireCompte(tr.magicNumber),
+            elimination: lireCompte(tr.eliminationNumber),
+            elimWc: lireCompte(tr.wildCardEliminationNumber),
             clinche: !!tr.clinched,
             serieType: tr.streak?.streakType,
             serieNb: tr.streak?.streakNumber || 0,
@@ -6124,8 +6424,8 @@ export default function App() {
       jsonMlb(
         `${API}/standings?leagueId=103,104&season=${saison}&standingsTypes=regularSeason` +
           `&fields=records,teamRecords,team,id,wins,losses,gamesBack,wildCardGamesBack,` +
-          `divisionRank,divisionLeader,magicNumber,eliminationNumber,clinched,` +
-          `streak,streakCode,streakNumber,streakType`
+          `divisionRank,wildCardRank,divisionLeader,magicNumber,eliminationNumber,` +
+          `wildCardEliminationNumber,clinched,streak,streakCode,streakNumber,streakType`
       ).then(lire);
 
     /* De fin octobre a fin mars, la saison en cours n'a aucun match joue :
@@ -6323,6 +6623,7 @@ ${POLICES}
           {[
             ["carnet", "Le carnet"],
             ["nuits", "Le programme"],
+            ["classement", "Le classement"],
             ["terrains", "Les terrains"],
             ["equipes", "Les équipes"],
             ["circuits", "Les circuits"],
@@ -6363,6 +6664,13 @@ ${POLICES}
         <Garde cle={onglet}>
         {onglet === "direct" ? (
           <VueDirect teams={teams} suivies={suivies} />
+        ) : onglet === "classement" ? (
+          <VueClassement
+            teams={teams}
+            bilans={bilans}
+            saisonBilans={saisonBilans}
+            suivies={suivies}
+          />
         ) : onglet === "terrains" ? (
           <VueTerrains
             teams={teams}
@@ -6471,6 +6779,9 @@ export {
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
+  // vue « le classement »
+  VueClassement, classementLigues, lireEcart, lireCompte, ecartWc, pctCourt, divisionCourte,
+  LigneClassement, LaLigne, BlocLigue, LIGUE_FR,
   // vue « le carnet »
   VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,

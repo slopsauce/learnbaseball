@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -656,5 +656,81 @@ describe("les couleurs dans la liste", () => {
     // melange raccourci/propriete longue a disparu du style des fiches.
     assert.doesNotMatch(html, /border:[^;"]*;[^"]*border-left:/,
       "mélanger `border` et `borderLeft` laisse React choisir l'ordre au rerendu");
+  });
+});
+
+describe("rendu de la vue Classement", () => {
+  const eq = (id, name, abbreviation, div) => ({ id, name, abbreviation, division: { id: 0, name: div } });
+  const equipes = [
+    eq(139, "Tampa Bay Rays", "TB", "American League East"),
+    eq(147, "New York Yankees", "NYY", "American League East"),
+    eq(111, "Boston Red Sox", "BOS", "American League East"),
+    eq(110, "Baltimore Orioles", "BAL", "American League East"),
+    eq(114, "Cleveland Guardians", "CLE", "American League Central"),
+    eq(116, "Detroit Tigers", "DET", "American League Central"),
+    eq(117, "Houston Astros", "HOU", "American League West"),
+    eq(119, "Los Angeles Dodgers", "LAD", "National League West"),
+    eq(121, "New York Mets", "NYM", "National League East"),
+  ];
+  const bilans = {
+    139: { v: 76, d: 52, pct: 0.594, rang: 1, meneur: true, magique: 32, serieNb: 2, serieType: "losses" },
+    147: { v: 73, d: 55, pct: 0.570, meneur: false, retard: 3, wc: -9.5, wcRang: 1, serieNb: 5, serieType: "wins" },
+    111: { v: 69, d: 59, pct: 0.539, meneur: false, retard: 7, wc: -5.5, wcRang: 2 },
+    110: { v: 62, d: 66, pct: 0.484, meneur: false, wc: 4.0, wcRang: 4 },
+    114: { v: 55, d: 73, pct: 0.430, meneur: false, wc: 12.0, wcRang: 6, elimWc: 0 },
+    116: { v: 75, d: 53, pct: 0.586, rang: 1, meneur: true, magique: 30 },
+    117: { v: 70, d: 58, pct: 0.547, rang: 1, meneur: true },
+    119: { v: 80, d: 48, pct: 0.625, rang: 1, meneur: true, clinche: true },
+    121: { v: 60, d: 68, pct: 0.469, meneur: false, wc: 6.0, wcRang: 5 },
+  };
+
+  test("se rend sans données, avec un mot d'attente", () => {
+    const html = rendre(React.createElement(VueClassement, { teams: [], bilans: {} }));
+    assert.ok(html.length > 100);
+    assert.match(html, /pas encore arrivé/);
+  });
+
+  test("montre les deux ligues, meneurs en tête de série et wild cards", () => {
+    const html = rendre(React.createElement(VueClassement, {
+      teams: equipes, bilans, suivies: [119],
+    }));
+    assert.match(html, /Ligue américaine/);
+    assert.match(html, /Ligue nationale/);
+    // Tetes de serie : les Rays (.594) avant les Tigers (.586).
+    assert.ok(html.indexOf("Tampa Bay Rays") < html.indexOf("Detroit Tigers"),
+      "les meneurs doivent être triés par bilan");
+    assert.match(html, /magique 32/);
+    assert.match(html, /qualifiée/);
+  });
+
+  test("les écarts au wild card portent le bon signe", () => {
+    const html = rendre(React.createElement(VueClassement, { teams: equipes, bilans }));
+    assert.match(html, /\+9\.5/, "une avance s'affiche avec son +");
+    assert.match(html, /(^|[^+\d])4\.0/, "un retard s'affiche sans signe");
+  });
+
+  test("la ligne des séries coupe la course après trois équipes", () => {
+    const html = rendre(React.createElement(VueClassement, { teams: equipes, bilans }));
+    assert.match(html, /LA LIGNE/);
+    assert.ok(html.indexOf("Baltimore Orioles") < html.indexOf("LA LIGNE"),
+      "la 3e place au wild card est au-dessus de la ligne");
+    assert.ok(html.indexOf("LA LIGNE") < html.indexOf("Cleveland Guardians"),
+      "une poursuivante est sous la ligne");
+  });
+
+  test("une équipe éliminée est dite éliminée", () => {
+    const html = rendre(React.createElement(VueClassement, { teams: equipes, bilans }));
+    assert.match(html, /éliminée/);
+  });
+
+  test("hors saison, la note d'avertissement s'affiche", () => {
+    const html = rendre(React.createElement(VueClassement, {
+      teams: equipes, bilans, saisonBilans: 2025,
+    }));
+    assert.match(html, /Hors saison : ce classement est celui de 2025/);
+  });
+
+  test("tolère des props absentes", () => {
+    assert.doesNotThrow(() => rendre(React.createElement(VueClassement, {})));
   });
 });
