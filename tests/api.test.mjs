@@ -311,7 +311,13 @@ describe("contrat : montages video", { skip: horsSaison }, () => {
 
   test("resume et match condense restent identifiables", async () => {
     const c = await j(`${API}/game/${pk}/content`);
-    const items = c.highlights?.highlights?.items || [];
+    // Le meme vivier que l'application : les highlights, plus le repli
+    // media.epgAlternate — le seul qui survive quand un edge du CDN sert
+    // la variante degradee sans `highlights`.
+    const items = [
+      ...(c.highlights?.highlights?.items || []),
+      ...(c.media?.epgAlternate || []).flatMap((g) => g?.items || []),
+    ];
     if (!items.length) return; // certains matchs n'ont aucun montage
     const tax = new Set(
       items.flatMap((it) => (it.keywordsAll || []).filter((k) => k.type === "mlbtax").map((k) => k.value))

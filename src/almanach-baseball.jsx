@@ -1778,6 +1778,18 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
         </p>
       )}
 
+      {/* Un vide silencieux laisserait croire a un oubli du site. Le coupable
+          est nomme, et la fiche retente a chaque ouverture (voir l'effet des
+          resumes) : le conseil de revenir n'est pas une formule de politesse. */}
+      {m.etat === "Final" && !m.reporte && resumes !== undefined &&
+        !resumes?.recap && !resumes?.condense && (
+        <p style={{ fontFamily: FF_MONO, fontSize: 10.5, color: T.dim, marginTop: 12 }}>
+          Pas de montage pour l'instant : l'API de la MLB sert par moments une
+          réponse incomplète, qui se répare d'elle-même. Rouvrez la fiche un
+          peu plus tard.
+        </p>
+      )}
+
       {(lanceurs[m.idLanceurExt] || lanceurs[m.idLanceurDom]) && (
         <p
           style={{
@@ -2000,6 +2012,13 @@ function notifier({ titre, corps, tag, cible, idEquipe }) {
  *  definition) et il n'existe pas de variante legere. Les flux HLS sont
  *  adaptatifs et bien plus econome : on les prefere quand le navigateur
  *  sait les lire nativement — Safari oui, Chrome demanderait hls.js.
+ *
+ *  Certains edges du CDN de la MLB servent une variante degradee de
+ *  /content ou `highlights` est nul — pour un match pourtant termine
+ *  depuis des jours, et jusqu'a un jour durant (stale-if-error=86400).
+ *  Verifie : le meme match, au meme instant, sort avec 40 clips depuis
+ *  un edge et zero depuis un autre. Les deux montages restent pourtant
+ *  publies dans media.epgAlternate, sous la meme forme : on y retombe.
  * ---------------------------------------------------------------- */
 function sourceLisible(playbacks = []) {
   const hls = playbacks.find((p) => p.name === "hlsCloud" || p.url?.endsWith(".m3u8"));
@@ -2012,7 +2031,10 @@ function sourceLisible(playbacks = []) {
 }
 
 function extraireResumes(contenu) {
-  const items = contenu?.highlights?.highlights?.items || [];
+  const items = [
+    ...(contenu?.highlights?.highlights?.items || []),
+    ...(contenu?.media?.epgAlternate || []).flatMap((g) => g?.items || []),
+  ];
   const par = (tax) =>
     items.find((it) => (it.keywordsAll || []).some((k) => k.type === "mlbtax" && k.value === tax));
   const monter = (it) => {
@@ -2676,7 +2698,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
 
   useEffect(() => {
     const m = matchOuvert;
-    if (!m || m.etat !== "Final" || m.reporte || resumes[m.id] !== undefined) return;
+    if (!m || m.etat !== "Final" || m.reporte) return;
+    // Un resultat vide n'est pas grave dans le marbre : la variante degradee
+    // du CDN (voir RESUMES DE MATCH) se resorbe d'elle-meme, on retente donc
+    // a chaque ouverture de la fiche.
+    const connu = resumes[m.id];
+    if (connu && (connu.recap || connu.condense)) return;
     let annule = false;
     jsonMlb(`${API}/game/${m.id}/content`)
       .then((c) => !annule && setResumes((x) => ({ ...x, [m.id]: extraireResumes(c) })))
@@ -2684,7 +2711,11 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     return () => {
       annule = true;
     };
-  }, [matchOuvert, resumes]);
+    // Dependre aussi de `resumes` referait partir la requete en boucle sur un
+    // match durablement sans montage : memoriser le resultat vide DOIT rester
+    // sans effet jusqu'a la prochaine ouverture.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [matchOuvert]);
 
   const total = [...parNuit.values()].reduce((a, l) => a + l.length, 0);
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;

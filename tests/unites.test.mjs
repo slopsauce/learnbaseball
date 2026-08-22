@@ -693,6 +693,24 @@ describe("résumés de match", () => {
     }
   });
 
+  test("retrouve les montages dans media.epgAlternate quand highlights est nul", () => {
+    /* Certains edges du CDN servent le match sans `highlights` — verifie sur
+       la serie NYY@BAL d'aout 2026 : 40 clips depuis un edge, zero depuis un
+       autre, au meme instant. Les montages restent dans media.epgAlternate. */
+    const degrade = {
+      highlights: { highlights: null },
+      media: {
+        epgAlternate: [
+          { title: "Extended Highlights", items: [item("condensed_game", "Condensed Game: A@B", "00:11:21", mp4)] },
+          { title: "Daily Recap", items: [item("mlb_recap", "Machin porte les siens", "00:03:04", mp4)] },
+        ],
+      },
+    };
+    const r = A.extraireResumes(degrade);
+    assert.equal(r.condense?.duree, "00:11:21");
+    assert.equal(r.recap?.duree, "00:03:04");
+  });
+
   test("écarte un montage sans source lisible", () => {
     const r = A.extraireResumes(contenu([item("mlb_recap", "t", "00:03:00", [])]));
     assert.equal(r.recap, null, "un montage sans playback ne doit pas produire de bouton mort");
