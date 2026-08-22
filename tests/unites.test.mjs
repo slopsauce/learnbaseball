@@ -403,6 +403,10 @@ describe("adressage par fragment d'URL", () => {
     for (const h of ["#equipes", "#equipe", "#effectif", "#roster", "#joueurs", "#/equipes", "#EQUIPES"])
       assert.equal(A.ongletDepuisFragment(h), "equipes", `alias non reconnu : ${h}`);
   });
+  test("les alias du classement aussi", () => {
+    for (const h of ["#classement", "#standings", "#rangs", "#wild-card", "#wildcard", "#/classement", "#CLASSEMENT"])
+      assert.equal(A.ongletDepuisFragment(h), "classement", `alias non reconnu : ${h}`);
+  });
   test("un fragment absent ou farfelu retombe sur le carnet", () => {
     for (const h of ["", "#", null, undefined, "#nawak", "#../../etc/passwd", "#<script>"])
       assert.equal(A.ongletDepuisFragment(h), "carnet", `repli manquant pour ${JSON.stringify(h)}`);
@@ -2317,5 +2321,84 @@ describe("l'énergie d'un circuit", () => {
       "pitchData quadruple la réponse — voir le commentaire au-dessus du filtre");
     assert.doesNotMatch(A.CHAMPS_CIRCUITS, /\bdetails\b/,
       "details est une clé présente sur chaque lancer");
+  });
+});
+
+describe("classement — lecture des écarts de l'API", () => {
+  /* L'API écrit « +9.5 » pour une avance sur la ligne du wild card, et
+     Number("+9.5") donne 9.5 : le signe se perdait, une équipe largement
+     qualifiée passait pour être neuf matchs et demi derrière. */
+  test("une avance (préfixe +) est stockée en négatif", () => {
+    assert.equal(A.lireEcart("+9.5"), -9.5);
+    assert.equal(A.lireEcart("+0.5"), -0.5);
+  });
+  test("un retard reste positif", () => {
+    assert.equal(A.lireEcart("2.5"), 2.5);
+    assert.equal(A.lireEcart("11.0"), 11);
+  });
+  test("le tiret veut dire « sans objet »", () => {
+    assert.equal(A.lireEcart("-"), null);
+    assert.equal(A.lireEcart(null), null);
+  });
+  test("« E » veut dire éliminé : le compte est à zéro, pas NaN", () => {
+    assert.equal(A.lireCompte("E"), 0);
+    assert.equal(A.lireCompte("32"), 32);
+    assert.equal(A.lireCompte("-"), null);
+  });
+  test("l'affichage suit les tableaux officiels : +1.5 dessus, 1.5 dessous", () => {
+    assert.equal(A.ecartWc({ wc: -1.5 }), "+1.5");
+    assert.equal(A.ecartWc({ wc: 0 }), "+0.0");
+    assert.equal(A.ecartWc({ wc: 3 }), "3.0");
+    assert.equal(A.ecartWc({ wc: null }), "");
+    assert.equal(A.ecartWc(null), "");
+  });
+});
+
+describe("classement — répartition et tri des ligues", () => {
+  const eq = (id, name, div) => ({ id, name, abbreviation: "", division: { id: 0, name: div } });
+  const equipes = [
+    eq(139, "Tampa Bay Rays", "American League East"),
+    eq(147, "New York Yankees", "American League East"),
+    eq(111, "Boston Red Sox", "American League East"),
+    eq(116, "Detroit Tigers", "American League Central"),
+    eq(117, "Houston Astros", "American League West"),
+    eq(119, "Los Angeles Dodgers", "National League West"),
+    eq(121, "New York Mets", "National League East"),
+  ];
+  const bilans = {
+    139: { pct: 0.594, meneur: true, magique: 32 },
+    147: { pct: 0.570, meneur: false, wc: -9.5, wcRang: 1 },
+    111: { pct: 0.539, meneur: false, wc: -5.5, wcRang: 2 },
+    116: { pct: 0.586, meneur: true, magique: 30 },
+    117: { pct: 0.547, meneur: true },
+    119: { pct: 0.625, meneur: true, clinche: true },
+    121: { pct: 0.469, meneur: false, wc: 6, wcRang: 5 },
+  };
+  const l = A.classementLigues(equipes, bilans);
+
+  test("chaque équipe tombe dans sa ligue, meneurs séparés de la chasse", () => {
+    assert.deepEqual(l[103].meneurs.map((x) => x.eq.id), [139, 116, 117]);
+    assert.deepEqual(l[103].chasse.map((x) => x.eq.id), [147, 111]);
+    assert.deepEqual(l[104].meneurs.map((x) => x.eq.id), [119]);
+    assert.deepEqual(l[104].chasse.map((x) => x.eq.id), [121]);
+  });
+  test("les meneurs sont triés par bilan — l'ordre des têtes de série", () => {
+    const pcts = l[103].meneurs.map((x) => x.b.pct);
+    assert.deepEqual(pcts, [...pcts].sort((a, z) => z - a));
+  });
+  test("la chasse suit le rang wild card de l'API", () => {
+    const rangs = l[103].chasse.map((x) => x.b.wcRang);
+    assert.deepEqual(rangs, [1, 2]);
+  });
+  test("une équipe sans bilan reste visible, en fin de course", () => {
+    const avec = A.classementLigues(
+      [...equipes, eq(140, "Texas Rangers", "American League West")], bilans);
+    const ids = avec[103].chasse.map((x) => x.eq.id);
+    assert.equal(ids[ids.length - 1], 140, "l'équipe sans bilan doit fermer la marche");
+  });
+  test("sans aucun bilan, personne ne disparaît", () => {
+    const vide = A.classementLigues(equipes, {});
+    assert.equal(vide[103].meneurs.length + vide[103].chasse.length, 5);
+    assert.equal(vide[104].meneurs.length + vide[104].chasse.length, 2);
   });
 });
