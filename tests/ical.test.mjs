@@ -2,6 +2,7 @@ import { test, describe } from "node:test";
 import assert from "node:assert/strict";
 
 import { construireIcal, plier } from "../outils/ical.mjs";
+import { icalDUnMatch } from "../src/ical-evenement.js";
 
 /* Un match d'apres-saison, reduit aux champs dont le generateur depend.
    Les valeurs par defaut sont celles du flux tel qu'il est AUJOURD'HUI —
@@ -175,5 +176,69 @@ describe("le calendrier de l'après-saison", () => {
     assert.match(ics, /BEGIN:VCALENDAR/);
     assert.match(ics, /END:VCALENDAR/);
     assert.equal(evenements(ics).length, 0);
+  });
+});
+
+/* ------------------------------------------------------------------ *
+ *  L'EVENEMENT D'UN SEUL MATCH, telecharge depuis la fiche du programme.
+ *  L'entree n'est pas le flux /schedule mais le match tel que le
+ *  programme le porte deja — d'ou un jeu de champs different.
+ * ------------------------------------------------------------------ */
+const duProgramme = (o = {}) => ({
+  id: 776413,
+  debut: "2026-08-23T00:10:00Z",
+  date: "2026-08-22",
+  tbd: false,
+  ext: "Los Angeles Dodgers",
+  dom: "San Diego Padres",
+  stade: "Petco Park",
+  ville: "San Diego",
+  matchSerie: 2,
+  totalSerie: 3,
+  lanceurExt: "Yoshinobu Yamamoto",
+  lanceurDom: "Dylan Cease",
+  ...o,
+});
+
+describe("l'événement d'un match, depuis sa fiche", () => {
+
+  test("un événement complet, à l'heure, prêt pour un client", () => {
+    const ics = icalDUnMatch(duProgramme(), { maintenant: new Date("2026-08-22T10:00:00Z") });
+    assert.match(ics, /^BEGIN:VCALENDAR\r\n/);
+    assert.match(ics, /\r\nEND:VCALENDAR\r\n$/);
+    assert.equal(ics.split("\n").every((l) => l === "" || l.endsWith("\r")), true);
+    const [ev] = evenements(ics);
+    assert.equal(champ(ev, "DTSTART"), "20260823T001000Z");
+    // Trois heures : la duree d'un match de saison reguliere, avec marge.
+    assert.equal(champ(ev, "DTEND"), "20260823T031000Z");
+    assert.match(champ(ev, "SUMMARY"), /Los Angeles Dodgers @ San Diego Padres/);
+    assert.match(champ(ev, "LOCATION"), /Petco Park\\, San Diego/);
+    assert.match(champ(ev, "DESCRIPTION"), /Match 2 sur 3/);
+    assert.match(champ(ev, "DESCRIPTION"), /Yamamoto/);
+    assert.equal(champ(ev, "STATUS"), "CONFIRMED");
+    // Le meme identifiant stable que l'abonnement : retelecharger le meme
+    // match met l'evenement a jour au lieu d'en empiler un second.
+    assert.equal(champ(ev, "UID"), "mlb-776413@learnbaseball");
+  });
+
+  test("un horaire non annoncé réserve la journée officielle, en tentative", () => {
+    /* Le meme piege que l'abonnement : `gameDate` porte une heure bouchon
+       tant que la ligue n'a rien annonce, et seul `tbd` le dit. */
+    const [ev] = evenements(icalDUnMatch(duProgramme({ tbd: true })));
+    assert.match(ev, /DTSTART;VALUE=DATE:20260822/);
+    // Borne de fin EXCLUSIVE : au 22, l'evenement s'etalerait sur deux jours.
+    assert.match(ev, /DTEND;VALUE=DATE:20260823/);
+    assert.equal(champ(ev, "STATUS"), "TENTATIVE");
+    assert.match(champ(ev, "DESCRIPTION"), /horaire n'est pas encore annoncé/);
+  });
+
+  test("les champs facultatifs manquants ne laissent pas de trou", () => {
+    // En debut de fenetre, ni serie ni lanceurs annonces ; parfois pas de ville.
+    const [ev] = evenements(icalDUnMatch(duProgramme({
+      matchSerie: null, totalSerie: null, lanceurExt: null, lanceurDom: null, ville: null,
+    })));
+    assert.doesNotMatch(champ(ev, "DESCRIPTION"), /Match|Lanceurs/);
+    assert.equal(champ(ev, "LOCATION"), "Petco Park");
+    assert.match(champ(ev, "DESCRIPTION"), /mlb\.com\/gameday\/776413/);
   });
 });

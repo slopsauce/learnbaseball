@@ -24,6 +24,13 @@
  *  n'est commis : le depot ne sert pas d'entrepot.
  * ------------------------------------------------------------------ */
 
+/* Les primitives RFC 5545 — echappement, pliage, horodatage — vivent avec
+   l'application (la fiche d'un match sait aussi se telecharger en .ics) :
+   une seule implementation, ecrite en TextEncoder pour tourner aussi bien
+   ici, sous Node, que dans le navigateur. */
+import { echapper, plier, horodatage, jourSuivant } from "../src/ical-evenement.js";
+export { plier };
+
 const API = "https://statsapi.mlb.com/api/v1";
 const TYPES = "F,D,L,W";     // wild card, division, championnat, Serie mondiale
 const PRODID = "-//learnbaseball//apres-saison//FR";
@@ -37,38 +44,6 @@ const TOUR = {
   W: "Série mondiale",
 };
 const LIGUE = { AL: "AL", NL: "NL" };
-
-/* Echappement RFC 5545 : la virgule et le point-virgule separent des
-   valeurs, la barre oblique inverse echappe, et un retour a la ligne
-   s'ecrit `\n` en toutes lettres. */
-const echapper = (s) =>
-  String(s).replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
-
-/* Pliage a 75 OCTETS, pas 75 caracteres. Un « é » en pese deux, et couper
-   au milieu d'une sequence UTF-8 produit un fichier que les clients
-   refusent — c'est la faute la plus courante des generateurs maison. */
-export function plier(ligne) {
-  const octets = Buffer.from(ligne, "utf8");
-  if (octets.length <= 75) return ligne;
-  const morceaux = [];
-  let debut = 0, limite = 75;
-  while (debut < octets.length) {
-    let fin = Math.min(debut + limite, octets.length);
-    // Reculer jusqu'au debut d'un caractere : 10xxxxxx est une continuation.
-    while (fin < octets.length && (octets[fin] & 0xc0) === 0x80) fin--;
-    morceaux.push((debut ? " " : "") + octets.subarray(debut, fin).toString("utf8"));
-    debut = fin;
-    limite = 74;   // les lignes suivantes commencent par une espace
-  }
-  return morceaux.join("\r\n");
-}
-
-const horodatage = (d) => d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
-const jourSuivant = (iso) => {
-  const d = new Date(`${iso}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-};
 
 /* Le nom court d'une equipe : « Dodgers » plutot que « Los Angeles
    Dodgers », sauf quand c'est un jeton, ou le nom complet est justement
