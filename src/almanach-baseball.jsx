@@ -9,6 +9,7 @@ import {
 } from "./donnees/balistique.js";
 import { couleurEquipe } from "./donnees/couleurs-equipes.js";
 import { abonnerPoussees } from "./pousse-direct.js";
+import { icalDUnMatch } from "./ical-evenement.js";
 
 /* ------------------------------------------------------------------ *
  *  L'ALMANACH
@@ -1686,6 +1687,24 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
             ? "en cours"
             : null
         )}
+        {/* Le match dans son agenda, en un clic. Fabrique ici meme et
+            servi en data:, sans requete ni fichier a heberger — quelques
+            centaines d'octets. Seulement pour un match A VENIR : ajouter
+            un match fini ou deja commence n'aurait pas de sens. */}
+        {ligne(
+          "agenda",
+          !fini && !m.reporte && m.etat !== "Live" ? (
+            <a
+              href={`data:text/calendar;charset=utf-8,${encodeURIComponent(
+                icalDUnMatch({ ...m, ext: eqE?.name || m.ext, dom: eqD?.name || m.dom, ville: s?.ville })
+              )}`}
+              download={`${m.ext}-${m.dom}-${m.date || m.nuit}.ics`}
+              style={{ color: T.clayLit, borderBottom: "1px solid currentColor", textDecoration: "none" }}
+            >
+              ajouter ce match à mon agenda (.ics)
+            </a>
+          ) : null
+        )}
       </div>
 
       {m.idLanceurExt && m.idLanceurDom && (
@@ -2397,6 +2416,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
               // gamePk ne suffit donc pas a designer une occurrence.
               cle: `${g.gamePk}@${nuit}`,
               debut: g.gameDate,   // instant UTC, pour le compte a rebours
+              date: g.officialDate, // journee officielle americaine, pour le .ics
+              /* L'heure bouchon du flux : tant qu'elle n'est pas annoncee,
+                 `gameDate` porte une valeur inventee et seul ce drapeau le
+                 dit. Rare en saison reguliere (rattrapages surtout), mais
+                 le fichier agenda doit reserver la journee, pas 7h33. */
+              tbd: !!g.status?.startTimeTBD,
               nuit,
               h,
               hhmm,
@@ -6411,7 +6436,7 @@ export {
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »
-  VueNuits, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
+  VueNuits, DetailMatch, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,

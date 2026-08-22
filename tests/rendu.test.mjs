@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -308,6 +308,40 @@ describe("lien vers la fiche d'un terrain", () => {
   });
   test("ne rend rien sans nom", () => {
     assert.equal(rendre(React.createElement(LienStade, { idStade: 5325 })), "");
+  });
+});
+
+describe("le lien agenda de la fiche d'un match", () => {
+  const m = {
+    id: 776413, cle: "776413@2026-08-22", nuit: "2026-08-22",
+    debut: "2026-08-23T00:10:00Z", date: "2026-08-22", tbd: false, hhmm: "02:10",
+    ext: "LAD", dom: "SD", idExt: 119, idDom: 135,
+    stade: "Petco Park", idStade: 2680, etat: "Preview",
+  };
+  const props = {
+    parId: { 119: equipe, 135: { id: 135, name: "San Diego Padres", abbreviation: "SD" } },
+    stades: { 2680: { nom: "Petco Park", ville: "San Diego" } },
+    lanceurs: {}, note: null, spoilers: false, onFermer: () => {},
+  };
+
+  test("un match à venir se télécharge en .ics, fabriqué au rendu", () => {
+    const html = rendre(React.createElement(DetailMatch, { m, ...props }));
+    assert.match(html, /ajouter ce match à mon agenda/);
+    // Fabrique dans la page et servi en data: — aucune requete, rien a heberger.
+    assert.match(html, /href="data:text\/calendar/);
+    assert.match(html, /download="LAD-SD-2026-08-22\.ics"/);
+    // L'affiche complete et le stade sont bien dans l'evenement encode.
+    const brut = decodeURIComponent(/data:text\/calendar;charset=utf-8,([^"]*)/.exec(html)[1].replaceAll("&amp;", "&"));
+    assert.match(brut, /SUMMARY:Los Angeles Dodgers @ San Diego Padres/);
+    assert.match(brut, /LOCATION:Petco Park\\, San Diego/);
+    assert.match(brut, /DTSTART:20260823T001000Z/);
+  });
+
+  test("pas de lien pour un match fini, en cours ou reporté", () => {
+    for (const fait of [{ etat: "Final" }, { etat: "Live" }, { reporte: true }]) {
+      const html = rendre(React.createElement(DetailMatch, { m: { ...m, ...fait }, ...props }));
+      assert.doesNotMatch(html, /agenda/, `lien présent malgré ${JSON.stringify(fait)}`);
+    }
   });
 });
 
