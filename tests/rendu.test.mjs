@@ -345,6 +345,51 @@ describe("le lien agenda de la fiche d'un match", () => {
   });
 });
 
+describe("les montages de la fiche d'un match passé", () => {
+  const m = {
+    id: 776413, cle: "776413@2026-08-20", nuit: "2026-08-20",
+    debut: "2026-08-21T00:10:00Z", date: "2026-08-20", tbd: false, hhmm: "02:10",
+    ext: "LAD", dom: "SD", idExt: 119, idDom: 135,
+    stade: "Petco Park", idStade: 2680, etat: "Final",
+  };
+  const props = {
+    parId: { 119: equipe, 135: { id: 135, name: "San Diego Padres", abbreviation: "SD" } },
+    stades: { 2680: { nom: "Petco Park", ville: "San Diego" } },
+    lanceurs: {}, note: null, spoilers: false, onFermer: () => {},
+  };
+  const montage = { url: "https://x/y.mp4", adaptatif: false, duree: "00:11:21", titre: "t" };
+
+  test("annonce la recherche tant que le contenu n'est pas là", () => {
+    const html = rendre(React.createElement(DetailMatch, { m, ...props }));
+    assert.match(html, /Recherche des montages/);
+  });
+
+  test("propose les deux montages quand la MLB les fournit", () => {
+    const html = rendre(React.createElement(DetailMatch, {
+      m, resumes: { recap: montage, condense: montage }, ...props,
+    }));
+    assert.match(html, /Match condensé/);
+    assert.match(html, /Résumé commenté/);
+  });
+
+  test("nomme le coupable quand la MLB ne fournit rien", () => {
+    /* Regression : la fiche restait muette — ni bouton, ni explication —
+       quand le CDN de la MLB servait sa variante sans montages. */
+    for (const vide of [null, { recap: null, condense: null }]) {
+      const html = rendre(React.createElement(DetailMatch, { m, resumes: vide, ...props }));
+      assert.match(html, /réponse incomplète/, `silence pour resumes=${JSON.stringify(vide)}`);
+      assert.doesNotMatch(html, /Recherche des montages/);
+    }
+  });
+
+  test("rien de tout cela pour un match à venir ou reporté", () => {
+    for (const pas of [{ etat: "Preview" }, { reporte: true }]) {
+      const html = rendre(React.createElement(DetailMatch, { m: { ...m, ...pas }, ...props }));
+      assert.doesNotMatch(html, /montage/i);
+    }
+  });
+});
+
 describe("aucune fuite de résultat au rendu", () => {
   /* Regression : le bandeau LA SITUATION affichait bilan, série et nombre
      magique — tous derivés du classement, donc de la nuit précédente.
