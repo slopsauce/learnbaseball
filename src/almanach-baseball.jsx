@@ -1605,6 +1605,41 @@ function LienStade({ idStade, nom, style }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ *  LIVRER LE .ICS SUR IOS
+ *  Safari iOS n'honore pas l'attribut download sur une URL data: :
+ *  taper le lien agenda ne fait rien du tout. Sur les ecrans tactiles
+ *  d'Apple — l'iPad recent se presente comme un Mac, on le reconnait au
+ *  toucher — le clic est donc intercepte :
+ *   - la feuille de partage d'abord, quand elle accepte les fichiers
+ *     (iOS 15+) : Calendrier, Fichiers ou Mail savent recevoir
+ *     l'evenement directement ;
+ *   - sinon un blob:, que le gestionnaire de telechargements accepte
+ *     la ou il refuse le data:.
+ *  Partout ailleurs, rien n'est intercepte : data: + download suffit.
+ * ------------------------------------------------------------------ */
+const tactileApple = (nav) =>
+  /iP(hone|ad|od)/.test(nav.userAgent) ||
+  (/Mac/.test(nav.userAgent) && nav.maxTouchPoints > 1);
+
+function livrerIcs(ics, nom, nav = navigator, doc) {
+  const type = "text/calendar;charset=utf-8";
+  const fichier = new File([ics], nom, { type });
+  if (nav.canShare?.({ files: [fichier] })) {
+    // L'annulation de la feuille par l'utilisateur n'est pas une erreur.
+    nav.share({ files: [fichier] }).catch(() => {});
+    return "partage";
+  }
+  const url = URL.createObjectURL(new Blob([ics], { type }));
+  const a = (doc || document).createElement("a");
+  a.href = url;
+  a.download = nom;
+  a.click();
+  // Revoquer tout de suite casserait le telechargement en cours.
+  setTimeout(() => URL.revokeObjectURL(url), 60e3);
+  return "blob";
+}
+
 /* Panneau de detail : remplace l'infobulle, inutilisable au toucher.
    Il s'ouvre sous la nuit concernee pour rester dans son contexte. */
 function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif, resumes }) {
@@ -1689,21 +1724,29 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
         )}
         {/* Le match dans son agenda, en un clic. Fabrique ici meme et
             servi en data:, sans requete ni fichier a heberger — quelques
-            centaines d'octets. Seulement pour un match A VENIR : ajouter
+            centaines d'octets. Sur iOS, ou ce lien resterait muet, le clic
+            passe par livrerIcs. Seulement pour un match A VENIR : ajouter
             un match fini ou deja commence n'aurait pas de sens. */}
         {ligne(
           "agenda",
-          !fini && !m.reporte && m.etat !== "Live" ? (
-            <a
-              href={`data:text/calendar;charset=utf-8,${encodeURIComponent(
-                icalDUnMatch({ ...m, ext: eqE?.name || m.ext, dom: eqD?.name || m.dom, ville: s?.ville })
-              )}`}
-              download={`${m.ext}-${m.dom}-${m.date || m.nuit}.ics`}
-              style={{ color: T.clayLit, borderBottom: "1px solid currentColor", textDecoration: "none" }}
-            >
-              ajouter ce match à mon agenda (.ics)
-            </a>
-          ) : null
+          !fini && !m.reporte && m.etat !== "Live" ? (() => {
+            const ics = icalDUnMatch({ ...m, ext: eqE?.name || m.ext, dom: eqD?.name || m.dom, ville: s?.ville });
+            const nom = `${m.ext}-${m.dom}-${m.date || m.nuit}.ics`;
+            return (
+              <a
+                href={`data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`}
+                download={nom}
+                onClick={(e) => {
+                  if (!tactileApple(navigator)) return;
+                  e.preventDefault();
+                  livrerIcs(ics, nom);
+                }}
+                style={{ color: T.clayLit, borderBottom: "1px solid currentColor", textDecoration: "none" }}
+              >
+                ajouter ce match à mon agenda (.ics)
+              </a>
+            );
+          })() : null
         )}
       </div>
 
@@ -6775,7 +6818,7 @@ export {
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »
-  VueNuits, DetailMatch, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
+  VueNuits, DetailMatch, tactileApple, livrerIcs, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
