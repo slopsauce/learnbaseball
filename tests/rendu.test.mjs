@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -342,6 +342,60 @@ describe("le lien agenda de la fiche d'un match", () => {
       const html = rendre(React.createElement(DetailMatch, { m: { ...m, ...fait }, ...props }));
       assert.doesNotMatch(html, /agenda/, `lien présent malgré ${JSON.stringify(fait)}`);
     }
+  });
+});
+
+/* Safari iOS n'honore pas download sur une URL data: — le clic y est
+   intercepté et le fichier livré autrement. Voir livrerIcs dans la source. */
+describe("la livraison du .ics là où data: reste muet", () => {
+  const IPHONE = { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15", maxTouchPoints: 5 };
+  const IPAD_EN_MAC = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", maxTouchPoints: 5 };
+  const MAC = { userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15", maxTouchPoints: 0 };
+  const WINDOWS_TACTILE = { userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", maxTouchPoints: 10 };
+
+  test("seuls les écrans tactiles d'Apple sont interceptés", () => {
+    assert.equal(tactileApple(IPHONE), true);
+    assert.equal(tactileApple(IPAD_EN_MAC), true, "l'iPad récent se présente comme un Mac");
+    assert.equal(tactileApple(MAC), false, "sur un vrai Mac, data: + download suffit");
+    assert.equal(tactileApple(WINDOWS_TACTILE), false, "tactile ne veut pas dire Apple");
+  });
+
+  test("la feuille de partage d'abord, quand elle accepte les fichiers", async () => {
+    const partages = [];
+    const nav = {
+      canShare: (d) => Array.isArray(d?.files) && d.files.length > 0,
+      share: (d) => { partages.push(d); return Promise.resolve(); },
+    };
+    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav), "partage");
+    assert.equal(partages.length, 1);
+    const f = partages[0].files[0];
+    assert.equal(f.name, "LAD-SD-2026-08-22.ics");
+    assert.match(f.type, /^text\/calendar/);
+    assert.match(await f.text(), /BEGIN:VCALENDAR/);
+  });
+
+  test("sinon un blob:, téléchargé puis révoqué", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const nav = { canShare: () => false, share: () => assert.fail("la feuille refusée ne doit pas s'ouvrir") };
+    const a = { clics: 0, click() { this.clics++; } };
+    const doc = { createElement: () => a };
+    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav, doc), "blob");
+    assert.equal(a.clics, 1);
+    assert.match(a.href, /^blob:/);
+    assert.equal(a.download, "LAD-SD-2026-08-22.ics");
+    t.mock.timers.tick(60e3);   // la révocation différée ne doit pas casser
+  });
+
+  test("sans canShare du tout (iOS 13-14), le blob prend le relais", () => {
+    const a = { clics: 0, click() { this.clics++; } };
+    const t0 = globalThis.setTimeout;
+    globalThis.setTimeout = () => 0;   // pas de minuterie qui traîne après le test
+    try {
+      assert.equal(livrerIcs("X", "m.ics", {}, { createElement: () => a }), "blob");
+    } finally {
+      globalThis.setTimeout = t0;
+    }
+    assert.equal(a.clics, 1);
   });
 });
 
