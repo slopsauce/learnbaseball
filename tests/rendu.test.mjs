@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, LienAgenda, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -341,6 +341,42 @@ describe("le lien agenda de la fiche d'un match", () => {
     for (const fait of [{ etat: "Final" }, { etat: "Live" }, { reporte: true }]) {
       const html = rendre(React.createElement(DetailMatch, { m: { ...m, ...fait }, ...props }));
       assert.doesNotMatch(html, /agenda/, `lien présent malgré ${JSON.stringify(fait)}`);
+    }
+  });
+});
+
+/* Le même lien agenda, réutilisé hors de la fiche : le match du jour et
+   « à ne pas rater » le proposent aussi. */
+describe("le lien agenda en composant, partout où un match à venir s'affiche", () => {
+  const m = {
+    id: 776413, nuit: "2026-08-22", debut: "2026-08-23T00:10:00Z",
+    date: "2026-08-22", tbd: false, ext: "LAD", dom: "SD",
+    stade: "Petco Park", etat: "Preview",
+  };
+
+  test("rend le data: + download, avec les noms complets et la ville fournis", () => {
+    const html = rendre(React.createElement(LienAgenda, {
+      m, ext: "Los Angeles Dodgers", dom: "San Diego Padres", ville: "San Diego",
+    }));
+    assert.match(html, /ajouter ce match à mon agenda/);
+    assert.match(html, /href="data:text\/calendar/);
+    assert.match(html, /download="LAD-SD-2026-08-22\.ics"/);
+    const brut = decodeURIComponent(/data:text\/calendar;charset=utf-8,([^"]*)/.exec(html)[1].replaceAll("&amp;", "&"));
+    assert.match(brut, /SUMMARY:Los Angeles Dodgers @ San Diego Padres/);
+    assert.match(brut, /LOCATION:Petco Park\\, San Diego/);
+  });
+
+  test("sans noms complets, les abréviations du match suffisent", () => {
+    const html = rendre(React.createElement(LienAgenda, { m }));
+    const brut = decodeURIComponent(/data:text\/calendar;charset=utf-8,([^"]*)/.exec(html)[1].replaceAll("&amp;", "&"));
+    assert.match(brut, /SUMMARY:LAD @ SD/);
+    assert.match(brut, /LOCATION:Petco Park/);
+  });
+
+  test("rien pour un match fini, en cours ou reporté", () => {
+    for (const fait of [{ etat: "Final" }, { etat: "Live" }, { reporte: true }]) {
+      assert.equal(rendre(React.createElement(LienAgenda, { m: { ...m, ...fait } })), "",
+        `lien présent malgré ${JSON.stringify(fait)}`);
     }
   });
 });

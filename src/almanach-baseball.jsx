@@ -1644,6 +1644,32 @@ function livrerIcs(ics, nom, nav = navigator, loc) {
   }
 }
 
+/* Le lien « ajouter ce match a mon agenda » : le meme .ics et la meme
+   interception iOS partout ou un match a venir s'affiche — la fiche, le
+   match du jour, « a ne pas rater ». Fabrique au rendu et servi en data:,
+   sans requete ni fichier a heberger. Rien pour un match fini, en cours
+   ou reporte : l'ajouter n'aurait pas de sens. `ext`/`dom` recoivent les
+   noms complets quand l'appelant les connait, `ville` complete le stade. */
+function LienAgenda({ m, ext, dom, ville, style }) {
+  if (m.etat === "Final" || m.etat === "Live" || m.reporte) return null;
+  const ics = icalDUnMatch({ ...m, ext: ext || m.ext, dom: dom || m.dom, ville });
+  const nom = `${m.ext}-${m.dom}-${m.date || m.nuit}.ics`;
+  return (
+    <a
+      href={`data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`}
+      download={nom}
+      onClick={(e) => {
+        if (!tactileApple(navigator)) return;
+        e.preventDefault();
+        livrerIcs(ics, nom);
+      }}
+      style={{ color: T.clayLit, borderBottom: "1px solid currentColor", textDecoration: "none", ...style }}
+    >
+      ajouter ce match à mon agenda (.ics)
+    </a>
+  );
+}
+
 /* Panneau de detail : remplace l'infobulle, inutilisable au toucher.
    Il s'ouvre sous la nuit concernee pour rester dans son contexte. */
 function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif, resumes }) {
@@ -1726,31 +1752,14 @@ function DetailMatch({ m, parId, stades, lanceurs, note, spoilers, onFermer, vif
             ? "en cours"
             : null
         )}
-        {/* Le match dans son agenda, en un clic. Fabrique ici meme et
-            servi en data:, sans requete ni fichier a heberger — quelques
-            centaines d'octets. Sur iOS, ou ce lien resterait muet, le clic
-            passe par livrerIcs. Seulement pour un match A VENIR : ajouter
-            un match fini ou deja commence n'aurait pas de sens. */}
+        {/* Le match dans son agenda, en un clic — voir LienAgenda. La
+            condition reste ici : sans elle, ligne() afficherait une
+            etiquette « agenda » vide pour un match fini. */}
         {ligne(
           "agenda",
-          !fini && !m.reporte && m.etat !== "Live" ? (() => {
-            const ics = icalDUnMatch({ ...m, ext: eqE?.name || m.ext, dom: eqD?.name || m.dom, ville: s?.ville });
-            const nom = `${m.ext}-${m.dom}-${m.date || m.nuit}.ics`;
-            return (
-              <a
-                href={`data:text/calendar;charset=utf-8,${encodeURIComponent(ics)}`}
-                download={nom}
-                onClick={(e) => {
-                  if (!tactileApple(navigator)) return;
-                  e.preventDefault();
-                  livrerIcs(ics, nom);
-                }}
-                style={{ color: T.clayLit, borderBottom: "1px solid currentColor", textDecoration: "none" }}
-              >
-                ajouter ce match à mon agenda (.ics)
-              </a>
-            );
-          })() : null
+          !fini && !m.reporte && m.etat !== "Live" ? (
+            <LienAgenda m={m} ext={eqE?.name} dom={eqD?.name} ville={s?.ville} />
+          ) : null
         )}
       </div>
 
@@ -3057,6 +3066,14 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                   <Lanceur id={matchDuJour.idLanceurDom} nom={matchDuJour.lanceurDom} st={lanceurs[matchDuJour.idLanceurDom]} />
                 </div>
               )}
+
+              <LienAgenda
+                m={matchDuJour}
+                ext={parId[matchDuJour.idExt]?.name}
+                dom={parId[matchDuJour.idDom]?.name}
+                ville={stades[matchDuJour.idStade]?.ville}
+                style={{ fontFamily: FF_MONO, fontSize: 11, display: "inline-block", marginTop: 10 }}
+              />
             </div>
           )}
 
@@ -3161,6 +3178,14 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                             <Lanceur id={m.idLanceurDom} nom={m.lanceurDom} st={lanceurs[m.idLanceurDom]} />
                           </div>
                         )}
+
+                        <LienAgenda
+                          m={m}
+                          ext={parId[m.idExt]?.name}
+                          dom={parId[m.idDom]?.name}
+                          ville={stades[m.idStade]?.ville}
+                          style={{ fontFamily: FF_MONO, fontSize: 10, display: "inline-block", marginTop: 6 }}
+                        />
                       </div>
                       {m.h < 24 && (
                         <span
@@ -6822,7 +6847,7 @@ export {
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »
-  VueNuits, DetailMatch, tactileApple, livrerIcs, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
+  VueNuits, DetailMatch, tactileApple, livrerIcs, LienAgenda, nuitDe, nuitCourante, departFrise, decalerJour, libelleNuit, repartirEnVoies,
   coteDomicile, noteSuspense, indiceEnvie, raisonEnvie, anecdote,
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
