@@ -396,13 +396,16 @@ describe("la livraison du .ics là où data: reste muet", () => {
     assert.equal(tactileApple(WINDOWS_TACTILE), false, "tactile ne veut pas dire Apple");
   });
 
-  test("navigue vers un blob: — Safari propose alors l'invitation de calendrier", (t) => {
+  test("un blob: téléchargé par <a download>, qui garde le nom du fichier", (t) => {
     t.mock.timers.enable({ apis: ["setTimeout"] });
-    const loc = { visites: [], assign(u) { this.visites.push(u); } };
-    const nav = { share: () => assert.fail("la feuille ne doit pas s'ouvrir quand la navigation suffit") };
-    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav, loc), "navigation");
-    assert.equal(loc.visites.length, 1);
-    assert.match(loc.visites[0], /^blob:/);
+    const nav = { share: () => assert.fail("la feuille ne doit pas s'ouvrir quand le blob suffit") };
+    const a = { clics: 0, click() { this.clics++; } };
+    const doc = { createElement: () => a };
+    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav, doc), "blob");
+    assert.equal(a.clics, 1);
+    assert.match(a.href, /^blob:/);
+    // Sans le download nommé, Safari baptiserait le fichier « unknown.ics ».
+    assert.equal(a.download, "LAD-SD-2026-08-22.ics");
     t.mock.timers.tick(60e3);   // la révocation différée ne doit pas casser
   });
 

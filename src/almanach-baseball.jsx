@@ -1611,28 +1611,33 @@ function LienStade({ idStade, nom, style }) {
  *  taper le lien agenda ne fait rien du tout. Sur les ecrans tactiles
  *  d'Apple — l'iPad recent se presente comme un Mac, on le reconnait au
  *  toucher — le clic est donc intercepte :
- *   - NAVIGUER vers un blob: typé text/calendar : Safari annonce que le
- *     site « tente d'afficher une invitation de calendrier » et ouvre
- *     l'apercu de l'evenement, d'ou un tap l'ajoute a Calendrier. C'est
- *     le seul chemin sans detour : Calendrier n'a pas d'extension de
- *     partage, la feuille oblige a passer par Fichiers ou Mail. Les iOS
- *     plus anciens proposent au pire le telechargement du fichier.
- *   - Si le blob ou la navigation echouent (WebView restrictif), la
- *     feuille de partage en secours quand elle accepte les fichiers.
+ *   - un <a download> synthetique sur un blob:, que le gestionnaire de
+ *     telechargements accepte la ou il refuse le data: — et qui garde
+ *     le NOM du fichier. Naviguer vers le blob a ete essaye : une URL
+ *     blob: ne portant pas de nom, Safari telechargeait un
+ *     « unknown.ics ». Un tap sur le fichier telecharge ouvre l'apercu
+ *     de l'evenement, d'ou un second l'ajoute a Calendrier — Calendrier
+ *     n'ayant pas d'extension de partage, il n'existe pas de chemin
+ *     plus court depuis une page statique.
+ *   - Si le blob echoue (WebView restrictif), la feuille de partage en
+ *     secours quand elle accepte les fichiers.
  *  Partout ailleurs, rien n'est intercepte : data: + download suffit.
  * ------------------------------------------------------------------ */
 const tactileApple = (nav) =>
   /iP(hone|ad|od)/.test(nav.userAgent) ||
   (/Mac/.test(nav.userAgent) && nav.maxTouchPoints > 1);
 
-function livrerIcs(ics, nom, nav = navigator, loc) {
+function livrerIcs(ics, nom, nav = navigator, doc) {
   const type = "text/calendar;charset=utf-8";
   try {
     const url = URL.createObjectURL(new Blob([ics], { type }));
-    (loc || window.location).assign(url);
-    // Revoquer tout de suite couperait l'invitation en train de s'ouvrir.
+    const a = (doc || document).createElement("a");
+    a.href = url;
+    a.download = nom;
+    a.click();
+    // Revoquer tout de suite casserait le telechargement en cours.
     setTimeout(() => URL.revokeObjectURL(url), 60e3);
-    return "navigation";
+    return "blob";
   } catch {
     const fichier = new File([ics], nom, { type });
     if (nav.canShare?.({ files: [fichier] })) {
