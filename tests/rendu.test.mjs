@@ -360,13 +360,29 @@ describe("la livraison du .ics là où data: reste muet", () => {
     assert.equal(tactileApple(WINDOWS_TACTILE), false, "tactile ne veut pas dire Apple");
   });
 
-  test("la feuille de partage d'abord, quand elle accepte les fichiers", async () => {
+  test("navigue vers un blob: — Safari propose alors l'invitation de calendrier", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const loc = { visites: [], assign(u) { this.visites.push(u); } };
+    const nav = { share: () => assert.fail("la feuille ne doit pas s'ouvrir quand la navigation suffit") };
+    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav, loc), "navigation");
+    assert.equal(loc.visites.length, 1);
+    assert.match(loc.visites[0], /^blob:/);
+    t.mock.timers.tick(60e3);   // la révocation différée ne doit pas casser
+  });
+
+  test("la feuille de partage en secours quand le blob échoue", async () => {
     const partages = [];
     const nav = {
       canShare: (d) => Array.isArray(d?.files) && d.files.length > 0,
       share: (d) => { partages.push(d); return Promise.resolve(); },
     };
-    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav), "partage");
+    const brut = URL.createObjectURL;
+    URL.createObjectURL = () => { throw new Error("WebView restrictif"); };
+    try {
+      assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav), "partage");
+    } finally {
+      URL.createObjectURL = brut;
+    }
     assert.equal(partages.length, 1);
     const f = partages[0].files[0];
     assert.equal(f.name, "LAD-SD-2026-08-22.ics");
@@ -374,28 +390,14 @@ describe("la livraison du .ics là où data: reste muet", () => {
     assert.match(await f.text(), /BEGIN:VCALENDAR/);
   });
 
-  test("sinon un blob:, téléchargé puis révoqué", (t) => {
-    t.mock.timers.enable({ apis: ["setTimeout"] });
-    const nav = { canShare: () => false, share: () => assert.fail("la feuille refusée ne doit pas s'ouvrir") };
-    const a = { clics: 0, click() { this.clics++; } };
-    const doc = { createElement: () => a };
-    assert.equal(livrerIcs("BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n", "LAD-SD-2026-08-22.ics", nav, doc), "blob");
-    assert.equal(a.clics, 1);
-    assert.match(a.href, /^blob:/);
-    assert.equal(a.download, "LAD-SD-2026-08-22.ics");
-    t.mock.timers.tick(60e3);   // la révocation différée ne doit pas casser
-  });
-
-  test("sans canShare du tout (iOS 13-14), le blob prend le relais", () => {
-    const a = { clics: 0, click() { this.clics++; } };
-    const t0 = globalThis.setTimeout;
-    globalThis.setTimeout = () => 0;   // pas de minuterie qui traîne après le test
+  test("sans blob ni partage, l'échec reste silencieux", () => {
+    const brut = URL.createObjectURL;
+    URL.createObjectURL = () => { throw new Error("WebView restrictif"); };
     try {
-      assert.equal(livrerIcs("X", "m.ics", {}, { createElement: () => a }), "blob");
+      assert.equal(livrerIcs("X", "m.ics", {}), "echec");
     } finally {
-      globalThis.setTimeout = t0;
+      URL.createObjectURL = brut;
     }
-    assert.equal(a.clics, 1);
   });
 });
 
