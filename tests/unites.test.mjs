@@ -1276,6 +1276,99 @@ describe("classification de l'état d'un match", () => {
   });
 });
 
+describe("le direct quand rien ne se joue — les matchs de la veille", () => {
+  /* Les nuits parisiennes, en heure UTC :
+       nuit du 26 : les matchs partent le 26 vers 23h UTC (01h le 27 a Paris)
+       nuit du 27 : idem le 27
+     « Maintenant » a 14h a Paris le 27 = 12h UTC : la nuit courante est le 27,
+     dont aucun match n'a encore commence. */
+  const jeu = (pk, iso, abs, code, ext = "NYY", dom = "BOS") => ({
+    gamePk: pk,
+    gameDate: iso,
+    status: { abstractGameState: abs, codedGameState: code },
+    venue: { name: "Fenway Park" },
+    teams: { away: { team: { id: 147, abbreviation: ext } }, home: { team: { id: 111, abbreviation: dom } } },
+  });
+  const NUIT_26 = "2026-07-26T23:10:00Z";
+  const NUIT_26_TARD = "2026-07-27T01:40:00Z"; // 03h40 a Paris : toujours la nuit du 26
+  const NUIT_27 = "2026-07-27T23:10:00Z";
+  const APRES_MIDI = new Date("2026-07-27T12:00:00Z"); // 14h a Paris
+
+  test("l'apres-midi parisien montre la nuit ecoulee au lieu du vide", () => {
+    const v = A.matchsDuDirect(
+      [jeu(1, NUIT_26, "Final", "F"), jeu(2, NUIT_26_TARD, "Final", "O"), jeu(3, NUIT_27, "Preview", "S")],
+      APRES_MIDI
+    );
+    assert.equal(v.liste.length, 2, "les deux matchs joues doivent apparaitre");
+    assert.equal(v.retombee, true);
+    assert.equal(v.nuit, "2026-07-26");
+    assert.ok(v.liste.every((g) => g.fini));
+  });
+
+  test("un match en cours interdit la retombee", () => {
+    const v = A.matchsDuDirect(
+      [jeu(1, NUIT_26, "Final", "F"), jeu(9, "2026-07-27T11:05:00Z", "Live", "I")],
+      APRES_MIDI
+    );
+    assert.equal(v.retombee, false, "on ne montre pas la veille quand ca joue");
+    assert.deepEqual(v.liste.map((g) => g.id), [9], "seul le match vif, la veille n'a plus rien a faire la");
+    assert.equal(v.nuit, "2026-07-27");
+  });
+
+  test("au petit matin, la nuit courante prime — rien ne change", () => {
+    // 04h a Paris le 27 : la nuit courante EST celle du 26.
+    const v = A.matchsDuDirect([jeu(1, NUIT_26, "Final", "F")], new Date("2026-07-27T02:00:00Z"));
+    assert.equal(v.retombee, false, "ce ne sont pas les matchs « de la veille », c'est la nuit en cours");
+    assert.equal(v.nuit, "2026-07-26");
+    assert.equal(v.liste.length, 1);
+  });
+
+  /* Le lendemain du match des etoiles, « hier » est vide : la retombee doit
+     chercher la derniere nuit JOUEE, pas la date de la veille. */
+  test("saute une nuit de repos pour trouver la derniere nuit jouee", () => {
+    const v = A.matchsDuDirect(
+      [jeu(1, "2026-07-25T23:10:00Z", "Final", "F"), jeu(2, "2026-07-25T23:40:00Z", "Final", "F")],
+      APRES_MIDI
+    );
+    assert.equal(v.nuit, "2026-07-25");
+    assert.equal(v.liste.length, 2);
+    assert.equal(v.retombee, true);
+  });
+
+  test("un report ne remonte jamais, meme sur la retombee", () => {
+    const v = A.matchsDuDirect([jeu(1, NUIT_26, "Final", "D")], APRES_MIDI);
+    assert.equal(v.liste.length, 0);
+    assert.equal(v.retombee, false, "sans rien a montrer, il n'y a pas de retombee mais l'ecran vide");
+    assert.equal(v.nuit, null);
+  });
+
+  test("hors saison, il n'y a rien a retomber", () => {
+    for (const jeux of [[], null, undefined]) {
+      const v = A.matchsDuDirect(jeux, APRES_MIDI);
+      assert.deepEqual(v.liste, []);
+      assert.equal(v.retombee, false);
+    }
+  });
+
+  test("le tri garde les matchs vifs devant, puis les plus recents", () => {
+    const v = A.matchsDuDirect(
+      [
+        jeu(1, "2026-07-27T23:10:00Z", "Final", "F"),
+        jeu(2, "2026-07-28T01:40:00Z", "Final", "F"),
+        jeu(3, "2026-07-28T02:10:00Z", "Live", "I"),
+      ],
+      new Date("2026-07-28T03:00:00Z") // 05h a Paris : nuit du 27
+    );
+    assert.deepEqual(v.liste.map((g) => g.id), [3, 2, 1]);
+  });
+
+  /* La fenetre de tirage doit couvrir ce que la retombee sait remonter :
+     sinon la fonction chercherait des nuits que la requete n'a pas ramenees. */
+  test("la fenetre demandee a l'API couvre les nuits que la retombee explore", () => {
+    assert.ok(A.NUITS_RETOMBEE >= 2, "une seule journee ne survit pas a une nuit de repos");
+  });
+});
+
 describe("date de reference : Paris et non UTC", () => {
   /* `toISOString().slice(0,10)` donne la date UTC. Entre minuit et 02h l'ete,
      c'est encore la veille a Paris — et toute la fenetre de nuits glissait

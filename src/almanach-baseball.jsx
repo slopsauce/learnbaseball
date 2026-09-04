@@ -4113,8 +4113,68 @@ function TableauManches({ innings, teams, ab }) {
   );
 }
 
+/* ------------------------------------------------------------------ *
+ *  CE QUE LE DIRECT MONTRE
+ *  Trois cas, et un seul ecran :
+ *    - des matchs se jouent : on les montre, suivis des finis de la nuit ;
+ *    - la nuit est finie mais c'est encore elle qui compte (petit matin) :
+ *      inchange, ce sont les memes matchs ;
+ *    - il ne se passe rien — la journee parisienne entiere, soit les deux
+ *      tiers du temps ou l'on ouvre l'application. On retombait alors sur
+ *      un ecran vide alors que les resultats de la nuit ecoulee etaient
+ *      dans la MEME reponse, deja telechargee. On les montre.
+ *
+ *  La retombee cherche la derniere nuit qui a quelque chose a montrer, et
+ *  non « hier » au sens du calendrier : apres le match des etoiles ou une
+ *  journee de repos, « hier » est vide et la veille de la veille est la
+ *  vraie derniere nuit jouee. D'ou la fenetre de trois jours au tirage.
+ * ------------------------------------------------------------------ */
+const NUITS_RETOMBEE = 3;
+
+function matchsDuDirect(jeux, maintenant = new Date()) {
+  const nuit = nuitCourante(maintenant);
+  const jouables = (jeux || [])
+    .map((g) => ({ g, e: classerMatch(g.status), nuit: nuitDe(g.gameDate).jour }))
+    .filter(({ e }) => !e.reporte && (e.vif || e.fini));
+
+  // Le cas normal : ce qui se joue, plus ce qui s'est joue cette nuit.
+  let retenus = jouables.filter((x) => x.e.vif || x.nuit === nuit);
+  let montree = nuit;
+  const retombee = !retenus.length;
+  if (retombee) {
+    // Les nuits sont des dates ISO : l'ordre alphabetique est l'ordre
+    // chronologique, la derniere est la plus recente.
+    montree = jouables.map((x) => x.nuit).sort().pop() || null;
+    retenus = montree ? jouables.filter((x) => x.nuit === montree) : [];
+  }
+
+  const liste = retenus
+    .map(({ g, e }) => ({
+      id: g.gamePk,
+      idExt: g.teams.away.team.id,
+      idDom: g.teams.home.team.id,
+      ext: g.teams.away.team.abbreviation,
+      dom: g.teams.home.team.abbreviation,
+      stade: g.venue?.name,
+      fini: e.fini,
+      echauffement: e.echauffement,
+      debut: g.gameDate,
+    }))
+    // Les matchs en cours d'abord, puis les plus recemment termines.
+    .sort((a, b) =>
+      a.fini !== b.fini ? (a.fini ? 1 : -1) : new Date(b.debut) - new Date(a.debut)
+    );
+
+  return { liste, nuit: liste.length ? montree : null, retombee: retombee && liste.length > 0 };
+}
+
 function VueDirect({ teams, suivies = [] }) {
   const [enCours, setEnCours] = useState([]);
+  /* Quelle nuit la liste montre, et si c'est une retombee — la derniere nuit
+     jouee, faute de match en cours. L'en-tete ne peut pas dire « cette nuit »
+     dans ce cas-la : il doit nommer la nuit. */
+  const [nuitVue, setNuitVue] = useState(null);
+  const [retombee, setRetombee] = useState(false);
   // Le prochain coup d'envoi, pour que l'ecran vide dise quand revenir.
   const [prochain, setProchain] = useState(null);
   const [choisi, setChoisi] = useState(null);
@@ -4149,40 +4209,21 @@ function VueDirect({ teams, suivies = [] }) {
     let annule = false;
     const tirer = () => {
       const auj = jourParis();
-      const veille = jourParis(new Date(Date.now() - 864e5));
-      jsonMlb(`${API}/schedule?sportId=1&startDate=${veille}&endDate=${auj}&hydrate=team`)
+      /* Trois jours en arriere, et non un seul : c'est ce qui permet a la
+         retombee de trouver la derniere nuit JOUEE meme apres une journee
+         de repos de la ligue. Le poids de la reponse ne change guere — une
+         quinzaine de matchs par journee, en champs deja filtres. */
+      const debut = jourParis(new Date(Date.now() - NUITS_RETOMBEE * 864e5));
+      jsonMlb(`${API}/schedule?sportId=1&startDate=${debut}&endDate=${auj}&hydrate=team`)
         .then((d) => {
           if (annule) return;
-          // On garde les matchs en cours ET ceux de la nuit ecoulee : le cas
-          // le plus frequent depuis la France est de se lever apres coup.
-          const nuit = nuitCourante();
-
-          const l = (d.dates || [])
-            .flatMap((x) => x.games || [])
-            .filter((g) => {
-              const e = classerMatch(g.status);
-              if (e.reporte || (!e.vif && !e.fini)) return false;
-              return e.vif || nuitDe(g.gameDate).jour === nuit;
-            })
-            .map((g) => {
-              const e = classerMatch(g.status);
-              return {
-                id: g.gamePk,
-                idExt: g.teams.away.team.id,
-                idDom: g.teams.home.team.id,
-                ext: g.teams.away.team.abbreviation,
-                dom: g.teams.home.team.abbreviation,
-                stade: g.venue?.name,
-                fini: e.fini,
-                echauffement: e.echauffement,
-                debut: g.gameDate,
-              };
-            })
-            // Les matchs en cours d'abord, puis les plus recemment termines.
-            .sort((a, b) =>
-              a.fini !== b.fini ? (a.fini ? 1 : -1) : new Date(b.debut) - new Date(a.debut)
-            );
-          setEnCours(l);
+          /* On garde les matchs en cours ET ceux de la nuit ecoulee : le cas
+             le plus frequent depuis la France est de se lever apres coup.
+             Et quand rien ne se joue, la derniere nuit jouee. */
+          const vue = matchsDuDirect((d.dates || []).flatMap((x) => x.games || []));
+          setEnCours(vue.liste);
+          setNuitVue(vue.nuit);
+          setRetombee(vue.retombee);
           /* Le prochain coup d'envoi se lit dans la meme reponse : les matchs
              a venir y figurent, ecartes plus haut parce qu'ils ne sont ni en
              cours ni termines. Aucune requete de plus. */
@@ -4364,11 +4405,38 @@ function VueDirect({ teams, suivies = [] }) {
             {(() => {
               const vifs = enCours.filter((g) => !g.fini && !g.echauffement).length;
               const finis = enCours.length - vifs;
-              if (vifs && finis) return `${vifs} EN COURS · ${finis} TERMINÉ${finis > 1 ? "S" : ""} CETTE NUIT`;
+              /* « CETTE NUIT » serait un mensonge sur une retombee : la nuit
+                 montree n'est pas celle qui court. On la nomme alors. */
+              const quand = retombee && nuitVue
+                ? (() => {
+                    const { soir, matin } = libelleNuit(nuitVue);
+                    return `NUIT DE ${soir} À ${matin}`.toUpperCase();
+                  })()
+                : "CETTE NUIT";
+              if (vifs && finis) return `${vifs} EN COURS · ${finis} TERMINÉ${finis > 1 ? "S" : ""} ${quand}`;
               if (vifs) return `${vifs} MATCH${vifs > 1 ? "S" : ""} EN COURS`;
-              return `${finis} MATCH${finis > 1 ? "S" : ""} TERMINÉ${finis > 1 ? "S" : ""} CETTE NUIT`;
+              return `${finis} MATCH${finis > 1 ? "S" : ""} TERMINÉ${finis > 1 ? "S" : ""} · ${quand}`;
             })()}
           </div>
+
+          {/* Sur une retombee, l'ecran ne dirait plus rien de l'absence de
+              direct ni du prochain coup d'envoi : c'etait tout l'interet de
+              l'ecran vide qu'on remplace. On le garde, en une ligne. */}
+          {retombee && (
+            <p style={{ fontSize: 14, lineHeight: 1.55, margin: "0 0 12px" }}>
+              Aucun match en cours — voici la dernière nuit jouée. La ligue joue surtout
+              entre minuit et 6 h, heure de Paris.
+              {prochain ? (
+                <>
+                  {" "}Le prochain coup d'envoi est {compteARebours(prochain.debut)} —{" "}
+                  <span style={{ fontFamily: FF_MONO, fontSize: 13 }}>
+                    {prochain.ext} @ {prochain.dom}, {nuitDe(prochain.debut).hhmm}
+                  </span>
+                  .
+                </>
+              ) : null}
+            </p>
+          )}
 
           <div
             style={{
@@ -6843,6 +6911,7 @@ export {
   cibleDepuisFragment, AffichesDuSoir, LienStade, enPi, distancesCloture, BandeauSituation,
   WIKI_STADES, lienWiki,
   VueDirect, BasesOccupees, Compteurs, TableauManches, CHAMPS_DIRECT, CADENCE_DIRECT, classerMatch,
+  matchsDuDirect, NUITS_RETOMBEE,
   // vue « les equipes »
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
   GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
