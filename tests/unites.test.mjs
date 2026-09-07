@@ -2000,6 +2000,99 @@ describe("balistique d'un circuit", () => {
     }
   });
 
+  test("sans rotation latérale, le vol reste dans un plan vertical", () => {
+    // Vu d'en haut, une droite : le point de chute est a l'azimut de depart.
+    for (const spray of [-30, 0, 24.5]) {
+      const vol = A.simuler(103, 28, spray, 1500);
+      assert.ok(Math.abs(vol.azimutChute - spray) < 0.01, `spray ${spray} : chute à ${vol.azimutChute}`);
+    }
+  });
+
+  test("la rotation latérale fait dériver la balle du côté de son signe", () => {
+    // Positif vers le champ droit, negatif vers le gauche : c'est la
+    // convention de `lateraleTypique`, et la scene compte dessus.
+    const droite = A.simuler(100, 27, 0, 2000, 0.005, 1000).azimutChute;
+    const gauche = A.simuler(100, 27, 0, 2000, 0.005, -1000).azimutChute;
+    assert.ok(droite > 3, `1000 tr/min devrait dériver nettement à droite : ${droite}°`);
+    assert.ok(Math.abs(droite + gauche) < 0.01, "et la dérive est symétrique");
+  });
+
+  test("la physique ne connaît pas le nord : la courbe tourne avec l'azimut de départ", () => {
+    /* C'est ce qui permet de simuler plein centre puis de tourner le trace :
+       la derive ne depend pas de la direction dans laquelle on frappe. */
+    const a = A.simuler(100, 27, 0, 2000, 0.005, 1200);
+    const b = A.simuler(100, 27, 25, 2000, 0.005, 1200);
+    assert.ok(Math.abs((b.azimutChute - 25) - a.azimutChute) < 0.05);
+    assert.ok(Math.abs(a.distance - b.distance) < 0.5);
+  });
+
+  test("la rotation latérale porte moins loin, à retro égal", () => {
+    // Mesure par Nathan : le slice mange une douzaine de pieds. Le modele
+    // doit aller dans le meme sens, sinon l'ajustement du retro ment.
+    const droit = A.simuler(100, 27.5, 0, 2500).distance;
+    const courbe = A.simuler(100, 27.5, 0, 2500, 0.005, 1500).distance;
+    assert.ok(courbe < droit, `${courbe} devrait être en deçà de ${droit}`);
+    assert.ok(droit - courbe < 40, `mais pas de ${(droit - courbe).toFixed(0)} pieds`);
+  });
+
+  test("la rotation latérale typique s'annule à 10° du côté tiré, et slice ailleurs", () => {
+    // Droitier : le cote tire est le champ gauche (spray negatif).
+    assert.ok(Math.abs(A.lateraleTypique(A.SPRAY_SANS_LATERALE, false)) < 1e-9);
+    assert.ok(A.lateraleTypique(0, false) > 0, "plein centre, un droitier slice vers la droite");
+    assert.ok(A.lateraleTypique(-30, false) < 0, "tiré à gauche, il crochète vers la ligne de gauche");
+    assert.ok(A.lateraleTypique(30, false) > 0, "poussé à droite, il slice vers la ligne de droite");
+    // Gaucher : tout se reflechit.
+    assert.ok(Math.abs(A.lateraleTypique(-A.SPRAY_SANS_LATERALE, true)) < 1e-9);
+    assert.ok(A.lateraleTypique(0, true) < 0, "plein centre, un gaucher slice vers la gauche");
+    assert.ok(A.lateraleTypique(30, true) > 0, "tiré à droite, il crochète vers la ligne de droite");
+    assert.ok(A.lateraleTypique(-30, true) < 0, "poussé à gauche, il slice vers la ligne de gauche");
+    // Pour un meme ecart a la ligne, l'oppose slice plus que le cote tire ne crochete.
+    assert.ok(Math.abs(A.lateraleTypique(30, false)) > Math.abs(A.lateraleTypique(-30, false)));
+    // Sans main connue, pas de crochet invente.
+    assert.equal(A.lateraleTypique(12, null), null);
+    assert.equal(A.lateraleTypique(NaN, false), null);
+  });
+
+  test("une balle plein centre slice de six à sept degrés : le calage de Nathan", () => {
+    /* « Spinning Out of Control » : les balles frappees fort plein centre
+       finissent 6 a 7 degres vers l'oppose. C'est LE nombre sur lequel la
+       pente de la laterale est calee ; s'il bouge, c'est que le modele a bouge. */
+    const r = A.reconstruire(100, 27, 0, 400, A.lateraleTypique(0, false));
+    assert.ok(r.derive > 5.5 && r.derive < 7.5, `dérive de ${r.derive.toFixed(1)}°`);
+    assert.ok(r.depart < 0, "partie côté gauche, retombée plein centre");
+  });
+
+  test("avec le crochet, la balle retombe toujours au point mesuré", () => {
+    /* Le contrat ne change pas : la courbe passe par les faits. Ce qui change,
+       c'est la direction de depart, recalee de la derive. */
+    for (const [ev, la, spray, dist, g] of [
+      [110.2, 20, 31.2, 376, false], [101.5, 27, 10.9, 420, true],
+      [104.4, 37, 38.9, 405, true], [100.6, 23, -25.9, 367, false], [98, 32, 5, 366, false],
+    ]) {
+      const lat = A.lateraleTypique(spray, g);
+      const r = A.reconstruire(ev, la, spray, dist, lat);
+      const fin = r.points[r.points.length - 1];
+      const chute = (Math.atan2(fin[0], fin[1]) * 180) / Math.PI;
+      assert.ok(Math.abs(chute - spray) < 0.05, `chute à ${chute.toFixed(2)}° au lieu de ${spray}`);
+      assert.ok(Math.abs(Math.hypot(fin[0], fin[1]) / 0.3048 - dist) < 2, `distance ${r.distance.toFixed(1)} pour ${dist}`);
+      assert.ok(Math.abs(r.depart + r.derive - spray) < 1e-9);
+      assert.ok(r.derivePi > 0 && r.derivePi < 130, `dérive au sol invraisemblable : ${r.derivePi}`);
+      // Le point de depart, lui, ne bouge pas : la balle part du marbre.
+      assert.ok(Math.hypot(r.points[0][0], r.points[0][1]) < 1e-9);
+    }
+  });
+
+  test("sans latérale, `reconstruire` est l'ancien calcul", () => {
+    const rot = A.ajusterRotation(101.5, 27, 10.9, 420);
+    const vol = A.simuler(101.5, 27, 10.9, rot);
+    const r = A.reconstruire(101.5, 27, 10.9, 420, 0);
+    assert.ok(Math.abs(r.rotation - rot) < 1e-6);
+    assert.ok(Math.abs(r.apex - vol.apex) < 1e-6);
+    assert.ok(Math.abs(r.derive) < 1e-9);
+    const fin = r.points[r.points.length - 1], fin0 = vol.points[vol.points.length - 1];
+    assert.ok(Math.hypot(fin[0] - fin0[0], fin[1] - fin0[1]) < 1e-6);
+  });
+
   test("le spray se lit depuis les coordonnées de la feuille de match", () => {
     assert.ok(Math.abs(A.sprayDepuisCoords(163.06, 36.88) - 13.1) < 0.2, "vers le champ droit");
     assert.ok(Math.abs(A.sprayDepuisCoords(49.43, 57.6) + 28.4) < 0.2, "vers le champ gauche");
@@ -2037,7 +2130,7 @@ describe("extraction des circuits", () => {
   const coup = (o = {}) => ({
     result: { eventType: "home_run", rbi: 1, ...(o.result || {}) },
     about: { inning: 3, halfInning: "top", ...(o.about || {}) },
-    matchup: { batter: { id: 1, fullName: "Un Frappeur" } },
+    matchup: { batter: { id: 1, fullName: "Un Frappeur" }, ...(o.matchup || {}) },
     playEvents: o.playEvents !== undefined ? o.playEvents : [
       { details: {} },
       { hitData: { launchSpeed: 105, launchAngle: 30, totalDistance: 411,
@@ -2054,6 +2147,18 @@ describe("extraction des circuits", () => {
     assert.equal(c[0].ev, 105);
     assert.equal(c[0].dist, 411);
     assert.ok(Math.abs(c[0].spray - 13.1) < 0.2);
+  });
+
+  test("la main du frappeur est lue pour ce passage, et son absence est un null", () => {
+    /* Un ambidextre change de cote selon le lanceur : `batSide` est celui du
+       passage, pas une propriete du joueur. Sans lui, pas de crochet estime
+       — mais le circuit est garde, il a toutes ses mesures. */
+    const lit = (m) => A.circuitsDuMatch({ allPlays: [coup({ matchup: m })] }, match)[0];
+    assert.equal(lit({ batSide: { code: "L" } }).gaucher, true);
+    assert.equal(lit({ batSide: { code: "R" } }).gaucher, false);
+    assert.equal(lit({}).gaucher, null);
+    assert.equal(lit({ batSide: { code: "S" } }).gaucher, null);
+    assert.match(A.CHAMPS_CIRCUITS, /\bbatSide\b/, "le filtre doit laisser passer la main");
   });
 
   test("seuls les circuits sont retenus", () => {
