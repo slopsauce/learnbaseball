@@ -5,7 +5,8 @@ import { CONTOUR_US, CARTE_L, CARTE_H, projeter } from "./donnees/carte.js";
 import { WIKI_STADES, AFFICHES } from "./donnees/stades.js";
 import { traduireAction } from "./donnees/traduction.js";
 import {
-  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, energie, ROTATION_MAX,
+  simuler, ajusterRotation, reconstruire, lateraleTypique, sprayDepuisCoords, murDuParc, energie,
+  ROTATION_MAX, SPRAY_SANS_LATERALE,
 } from "./donnees/balistique.js";
 import { couleurEquipe } from "./donnees/couleurs-equipes.js";
 import { abonnerPoussees } from "./pousse-direct.js";
@@ -336,6 +337,17 @@ async function loadState() {
     return { ...ETAT_VIDE, ...(JSON.parse(localStorage.getItem(STORE_KEY)) || {}) };
   } catch {
     return { ...ETAT_VIDE };
+  }
+}
+
+/* Un reglage lu d'un coup, pour initialiser un etat sans attendre un effet :
+   la vue qui l'utilise doit dessiner juste des le premier rendu. */
+function lireReglage(cle, defaut) {
+  try {
+    const s = JSON.parse(localStorage.getItem(STORE_KEY)) || {};
+    return cle in s ? s[cle] : defaut;
+  } catch {
+    return defaut;
   }
 }
 
@@ -5202,8 +5214,12 @@ function VueEquipes({ teams, suivies = [], bilans = {}, stades = {}, cible = nul
    onglet : sans eux, il n'y a pas de trajectoire a calculer. */
 const CHAMPS_CIRCUITS =
   "allPlays,result,eventType,description,rbi,about,inning,halfInning," +
-  "matchup,batter,id,fullName,playEvents,playId,hitData,launchSpeed,launchAngle," +
+  "matchup,batter,id,fullName,batSide,code,playEvents,playId,hitData,launchSpeed,launchAngle," +
   "totalDistance,coordinates,coordX,coordY";
+/* `batSide` : la main du frappeur pour CE passage — un ambidextre change de
+   cote selon le lanceur. Elle ne sert qu'au crochet estime : c'est elle qui
+   dit de quel cote est la ligne « tiree ». `code` est sa seule cle utile ; il
+   ne fait entrer rien d'autre, `details` restant hors du filtre. */
 
 /* On aimerait aussi la vitesse du lancer, pour montrer que le frappeur ne
    part pas d'une balle immobile mais en renverse une lancee. Elle coute trop
@@ -5229,6 +5245,7 @@ function circuitsDuMatch(pbp, match) {
     const spray = sprayDepuisCoords(Number(hd?.coordinates?.coordX), Number(hd?.coordinates?.coordY));
     if (!Number.isFinite(ev) || !Number.isFinite(la) || !Number.isFinite(dist) || spray == null) continue;
     const haut = p.about?.halfInning === "top";
+    const main = p.matchup?.batSide?.code;
     out.push({
       cle: `${match.id}-${p.about?.inning}-${p.about?.halfInning}-${p.matchup?.batter?.id}`,
       // Le playId du lancer frappe EST le guid du clip : c'est par la que la
@@ -5243,6 +5260,8 @@ function circuitsDuMatch(pbp, match) {
       manche: p.about?.inning,
       haut,
       points: p.result?.rbi || 1,
+      // `null` quand la main manque : le crochet estime ne se dessinera pas.
+      gaucher: main === "L" ? true : main === "R" ? false : null,
       ev, la, spray, dist,
     });
   }
@@ -5261,6 +5280,11 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
   const choisirEquipe = (id) => { setChoisiAlaMain(true); setTeamId(id); };
 
   const [toute, setToute] = useState(false);   // ce match | toute la nuit
+  /* Le crochet estime : une option, parce que sa courbure n'est pas une
+     mesure de la balle mais la rotation laterale TYPIQUE de son angle de
+     spray. Retenue d'une visite a l'autre, comme les autres reglages. */
+  const [crochet, setCrochet] = useState(() => lireReglage("crochet", false));
+  const basculerCrochet = (v) => { setCrochet(v); saveState({ crochet: v }); };
   const [brut, setBrut] = useState([]);
   const [phase, setPhase] = useState("load");  // load | ok | vide | erreur
   const [erreur, setErreur] = useState("");
@@ -5369,10 +5393,17 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
   const circuits = useMemo(
     () =>
       brut.map((c) => {
-        const rotation = ajusterRotation(c.ev, c.la, c.spray, c.dist);
-        const vol = simuler(c.ev, c.la, c.spray, rotation);
+        /* Avec le crochet, la balle part d'un cote de son point de chute et y
+           revient en courbant ; sans, elle file droit. Dans les deux cas elle
+           retombe a la distance et a l'azimut mesures. */
+        const laterale = crochet ? lateraleTypique(c.spray, c.gaucher) : null;
+        const vol = reconstruire(c.ev, c.la, c.spray, c.dist, laterale ?? 0);
+        const rotation = vol.rotation;
         return {
           ...c,
+          // Le crochet tel que dessine : nul quand l'option est eteinte ou la main inconnue.
+          laterale: laterale == null ? null : Math.round(laterale),
+          derivePi: laterale == null ? 0 : Math.round(vol.derivePi),
           /* La couleur de l'equipe, et non une teinte unique : sur une nuit
              entiere, vingt-huit courbes jaunes ne se distinguent pas. */
           couleur: parseInt(couleurEquipe(c.idEquipe).slice(1), 16),
@@ -5391,8 +5422,10 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
           points: vol.points.filter((_, i) => i % 4 === 0).map((q) => q.map((x) => x / 0.3048)),
         };
       }),
-    [brut]
+    [brut, crochet]
   );
+  // Des circuits dont la main du frappeur manque : le crochet ne se dessine pas pour eux.
+  const sansMain = crochet && circuits.some((c) => c.gaucher == null);
 
   const parEquipe = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
   /* Le parc : celui du match quand on n'en regarde qu'un, sinon rien de
@@ -5424,7 +5457,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
         suivre.
       </p>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap", alignItems: "center" }}>
         {[[false, "Ce match"], [true, "Toute la nuit"]].map(([v, lib]) => (
           <button
             key={String(v)}
@@ -5436,6 +5469,19 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             {lib}
           </button>
         ))}
+        {/* A part des deux autres : ce n'est pas un choix de matchs, c'est un
+            choix de LECTURE. Eteint, la scene ne montre que ce qui est mesure ;
+            allume, elle y ajoute une courbure typique, et le dit. */}
+        <button
+          className="alm-btn"
+          onClick={() => basculerCrochet(!crochet)}
+          aria-pressed={crochet}
+          title="Courber les trajectoires selon la rotation latérale typique de leur angle de spray — une estimation, pas une mesure"
+          style={{ ...btnStyle(false), marginLeft: "auto",
+            borderColor: crochet ? T.sodium : "rgba(239,243,234,.3)", color: crochet ? T.sodium : T.chalk }}
+        >
+          Crochet estimé {crochet ? "· oui" : "· non"}
+        </button>
       </div>
 
       {!toute && (
@@ -5555,6 +5601,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
                     >
                       {Math.round(c.dist)} pi · {Math.round(c.ev)} mph · {Math.round(c.la)}° ·
                       apex ~{c.apex} pi
+                      {c.laterale != null ? ` · crochet ~${c.derivePi} pi` : ""}
                       {c.sature ? " · vent arrière probable" : ""}
                     </span>
                   </span>
@@ -5572,6 +5619,28 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             Magnus, intégrés pas à pas. La rotation de la balle n'est pas publiée : on retient celle
             qui fait retomber la balle à la distance annoncée, ce qui absorbe aussi le vent. L'apex
             et le temps de vol sont donc des estimations, pas des mesures.
+            {crochet ? (
+              <>
+                <br />
+                <strong>Crochet estimé</strong> : vu d'en haut, une balle réelle ne file pas droit —
+                tirée vers la ligne, elle crochète ; poussée à l'opposé, elle slice. C'est la rotation
+                latérale, que la ligue ne publie pas plus que la direction de départ. La courbure
+                dessinée est la rotation latérale <strong>typique</strong> de l'angle de spray, lue par
+                Alan Nathan dans les mesures Statcast : nulle à {Math.abs(SPRAY_SANS_LATERALE)}° du côté
+                tiré, croissante vers l'opposé — une balle plein centre slice de six à sept degrés. La
+                direction de départ est recalée pour que la balle retombe quand même au point mesuré.
+                Le point de chute reste un fait ; la courbe pour y arriver est une moyenne, pas la
+                trajectoire de cette balle-là.
+                {sansMain ? " Quand la main du frappeur manque, la trajectoire reste droite." : ""}
+              </>
+            ) : (
+              <>
+                <br />
+                Vu d'en haut, les trajectoires filent droit : la ligue ne publie ni la rotation latérale
+                ni la direction de départ, seulement le point de chute. « Crochet estimé », ci-dessus,
+                ajoute la courbure typique de l'angle de spray — en le disant.
+              </>
+            )}
             {parc?.qualite === "trace" ? (
               <>
                 <br />
@@ -6917,7 +6986,8 @@ export {
   GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
   // vue « les circuits »
   VueCircuits, SceneCircuits, ClipCircuit, BilanEnergie, circuitsDuMatch, CHAMPS_CIRCUITS,
-  simuler, ajusterRotation, sprayDepuisCoords, murDuParc, energie, ROTATION_MAX,
+  simuler, ajusterRotation, reconstruire, lateraleTypique, sprayDepuisCoords, murDuParc, energie,
+  ROTATION_MAX, SPRAY_SANS_LATERALE,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
   estIntendance, INTENDANCE,
   // vue « le programme »

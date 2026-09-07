@@ -45,8 +45,16 @@ function coefficientPortance(rotationTrMin, vitesse) {
 }
 
 /* Repere de simulation, en metres : x vers le champ droit, y vers le champ
-   centre, z vers le ciel. Le marbre est a l'origine. */
-export function simuler(vitesseMph, angleDeg, sprayDeg, rotationTrMin, dt = 0.005) {
+   centre, z vers le ciel. Le marbre est a l'origine.
+
+   `rotationTrMin` est le retro (axe horizontal, perpendiculaire au depart :
+   il porte). `lateraleTrMin` est la rotation LATERALE, autour de l'axe
+   perpendiculaire a la vitesse dans son plan vertical — a peu pres la
+   verticale, inclinee de l'angle d'envol, comme Nathan la definit. Positive,
+   elle fait derriver la balle vers le champ droit ; negative, vers le champ
+   gauche. A zero, le vol reste dans un plan vertical : vu d'en haut, une
+   droite. */
+export function simuler(vitesseMph, angleDeg, sprayDeg, rotationTrMin, dt = 0.005, lateraleTrMin = 0) {
   const v0 = vitesseMph * MPH_PAR_MS;
   const a = (angleDeg * Math.PI) / 180;
   const s = (sprayDeg * Math.PI) / 180;
@@ -54,17 +62,30 @@ export function simuler(vitesseMph, angleDeg, sprayDeg, rotationTrMin, dt = 0.00
   let v = [v0 * Math.cos(a) * Math.sin(s), v0 * Math.cos(a) * Math.cos(s), v0 * Math.sin(a)];
   let p = [0, 0, HAUTEUR_IMPACT];
 
-  /* Axe de rotation : horizontal et perpendiculaire au deplacement, ce qui
-     oriente le Magnus vers le haut. C'est le retro d'une balle soulevee —
-     le cas de tous les circuits. */
-  const w = [rotationTrMin * Math.cos(s), -rotationTrMin * Math.sin(s), 0];
+  /* Le vecteur rotation, somme de deux axes : le retro (horizontal, perpendi-
+     culaire au deplacement, Magnus vers le haut — le cas de tous les
+     circuits) et la laterale. L'axe de celle-ci est la « verticale » vue de
+     la balle : perpendiculaire a la vitesse, dans son plan vertical. Son
+     Magnus est horizontal au depart, perpendiculaire a la course — c'est
+     lui qui courbe le vol vu d'en haut. Le signe : n × v pointe vers le
+     champ gauche, d'ou le moins pour que positif aille a droite. */
+  const n = [-Math.sin(a) * Math.sin(s), -Math.sin(a) * Math.cos(s), Math.cos(a)];
+  const w = [
+    rotationTrMin * Math.cos(s) - lateraleTrMin * n[0],
+    -rotationTrMin * Math.sin(s) - lateraleTrMin * n[1],
+    -lateraleTrMin * n[2],
+  ];
+  const rotationTotale = Math.hypot(w[0], w[1], w[2]);
 
   const acceleration = (vit) => {
     const norme = Math.hypot(vit[0], vit[1], vit[2]);
     const acc = [-K * CD * norme * vit[0], -K * CD * norme * vit[1], -G - K * CD * norme * vit[2]];
-    if (rotationTrMin > 1) {
-      const CL = coefficientPortance(rotationTrMin, norme);
-      const u = [w[0] / rotationTrMin, w[1] / rotationTrMin, w[2] / rotationTrMin];
+    if (rotationTotale > 1) {
+      /* La portance depend de la rotation TOTALE : ajouter de la laterale a
+         un retro donne n'ajoute pas de portance verticale, elle en retire
+         meme un peu — la balle qui crochete porte moins loin, c'est mesure. */
+      const CL = coefficientPortance(rotationTotale, norme);
+      const u = [w[0] / rotationTotale, w[1] / rotationTotale, w[2] / rotationTotale];
       // produit vectoriel rotation x vitesse : la direction de la portance
       const c = [
         u[1] * vit[2] - u[2] * vit[1],
@@ -107,6 +128,9 @@ export function simuler(vitesseMph, angleDeg, sprayDeg, rotationTrMin, dt = 0.00
     // La vitesse au moment de retomber : `v` est le vecteur vitesse a la
     // derniere iteration, donc rien a estimer.
     vitesseFinale: Math.hypot(v[0], v[1], v[2]) / MPH_PAR_MS, // mph
+    // L'azimut du point de chute, en degres : la ou la balle est VRAIMENT
+    // tombee, qui differe du `sprayDeg` de depart des que la laterale agit.
+    azimutChute: (Math.atan2(fin[0], fin[1]) * 180) / Math.PI,
   };
 }
 
@@ -130,15 +154,99 @@ export const ROTATION_MAX = 4500;
 
 /* La rotation qui fait retomber la balle a la distance annoncee. Monotone :
    plus de retro, plus de portance, plus de distance — la dichotomie converge
-   donc sans surprise. Trente-six passes suffisent a la precision du pied. */
-export function ajusterRotation(vitesseMph, angleDeg, sprayDeg, distancePi) {
+   donc sans surprise. Trente-six passes suffisent a la precision du pied.
+   La laterale, si on en donne, est tenue fixe : c'est le retro qu'on cherche. */
+export function ajusterRotation(vitesseMph, angleDeg, sprayDeg, distancePi, lateraleTrMin = 0) {
   let bas = 0, haut = ROTATION_MAX;
   for (let i = 0; i < 36; i++) {
     const milieu = (bas + haut) / 2;
-    if (simuler(vitesseMph, angleDeg, sprayDeg, milieu).distance < distancePi) bas = milieu;
+    if (simuler(vitesseMph, angleDeg, sprayDeg, milieu, 0.005, lateraleTrMin).distance < distancePi) bas = milieu;
     else haut = milieu;
   }
   return (bas + haut) / 2;
+}
+
+/* ------------------------------------------------------------------ *
+ *  LE CROCHET, ESTIME
+ *  A la television, un circuit ne file pas droit : tire vers la ligne,
+ *  il « crochete » ; pousse a l'oppose, il « slice ». C'est la rotation
+ *  laterale, que le contact bat-balle impose des que la batte n'est pas
+ *  perpendiculaire au lancer. Or l'API ne publie NI la rotation, NI la
+ *  direction de depart : un seul azimut, celui du point de chute. Une
+ *  courbe vue d'en haut demande deux contraintes, on n'en a qu'une.
+ *
+ *  Ce qu'on fait donc : on prend la rotation laterale TYPIQUE pour cet
+ *  angle de spray, telle que Nathan l'a lue dans les mesures Statcast
+ *  (« Why Does a Fly Ball Carry Better to Centerfield? », 2020) — et on
+ *  recale la direction de depart pour que la balle retombe quand meme au
+ *  point mesure. La courbe passe toujours par les faits ; sa courbure,
+ *  elle, est une moyenne statistique, pas une mesure de CETTE balle.
+ *  C'est pour cela que le crochet est une option, et qu'elle se dit
+ *  « estimee ».
+ *
+ *  Ce que disent les donnees (Nathan, fig. 2 et « Spinning Out of
+ *  Control », 2016) :
+ *   - la laterale croit lineairement avec le spray, compte depuis le cote
+ *     tire (negatif) vers l'oppose (positif) ;
+ *   - elle s'annule non pas plein centre, mais a −10° environ, du cote
+ *     tire : la batte est inclinee au contact, barillet plus bas que le
+ *     manche, et cette inclinaison a elle seule donne du slice ;
+ *   - consequence : une balle frappee plein centre slice de 6 a 7° vers
+ *     l'oppose en moyenne, et pour un meme ecart a la ligne, l'oppose
+ *     slice plus que le cote tire ne crochete.
+ *  La pente ci-dessous est calee pour reproduire ces 6-7° plein centre sur
+ *  un circuit ordinaire (100 mph, 27°) ; elle donne alors, a 30° a l'oppose,
+ *  les 2 000 tr/min et quelques qu'on lit sur la figure de Nathan.
+ * ------------------------------------------------------------------ */
+export const SPRAY_SANS_LATERALE = -10;     // degres, cote tire
+export const LATERALE_PAR_DEGRE = 60;       // tr/min par degre de spray
+export const LATERALE_MAX = 3000;           // tr/min, au-dela plus rien de mesure
+
+/* La rotation laterale typique d'une balle retombee a `sprayDeg` (positif
+   vers le champ droit), pour un frappeur gaucher ou droitier. Le signe suit
+   la convention de `simuler` : positif fait derriver vers le champ droit.
+   Sans main connue, pas de crochet : `null`, et la vue le dit. */
+export function lateraleTypique(sprayDeg, gaucher) {
+  if (!Number.isFinite(sprayDeg) || typeof gaucher !== "boolean") return null;
+  // Le spray « ajuste » de Nathan : negatif du cote tire, quelle que soit la main.
+  const ajuste = gaucher ? -sprayDeg : sprayDeg;
+  const grandeur = LATERALE_PAR_DEGRE * (ajuste - SPRAY_SANS_LATERALE);
+  const bornee = Math.max(-LATERALE_MAX, Math.min(LATERALE_MAX, grandeur));
+  /* Positif (slice) pousse vers le champ oppose : a droite pour un droitier,
+     a gauche pour un gaucher. Negatif (crochet) pousse vers le cote tire. */
+  return gaucher ? -bornee : bornee;
+}
+
+/* La reconstruction complete d'un circuit : retro ajuste sur la distance,
+   direction de depart recalee sur le point de chute. Sans laterale, c'est
+   l'ancien calcul ; avec, la balle part d'un cote de son point de chute et
+   y revient en courbant.
+
+   Le recalage ne coute rien : la physique ne connait pas le nord. Traînee,
+   gravite et Magnus (defini par rapport a la vitesse) sont indifferents a
+   l'azimut de depart, donc la trajectoire simulee plein centre est, a une
+   rotation autour de la verticale pres, LA trajectoire. On la simule une
+   fois, on lit ou elle tombe, on la tourne pour que ce soit au bon endroit. */
+export function reconstruire(vitesseMph, angleDeg, sprayDeg, distancePi, lateraleTrMin = 0) {
+  const laterale = Number.isFinite(lateraleTrMin) ? lateraleTrMin : 0;
+  const rotation = ajusterRotation(vitesseMph, angleDeg, 0, distancePi, laterale);
+  const vol = simuler(vitesseMph, angleDeg, 0, rotation, 0.005, laterale);
+  // La derive : de combien la balle a tourne, en degres, entre son depart et sa chute.
+  const derive = vol.azimutChute;
+  const depart = sprayDeg - derive;
+  const t = (depart * Math.PI) / 180, c = Math.cos(t), sn = Math.sin(t);
+  const points = vol.points.map(([x, y, z]) => [x * c + y * sn, -x * sn + y * c, z]);
+  return {
+    ...vol,
+    points,
+    rotation,
+    laterale,
+    depart,                                          // azimut de depart, degres
+    derive,                                          // degres, positif vers le champ droit
+    // L'ecart lateral au sol entre la ligne de depart et le point de chute, en pieds.
+    derivePi: Math.abs(distancePi * Math.sin((derive * Math.PI) / 180)),
+    azimutChute: sprayDeg,
+  };
 }
 
 /* ------------------------------------------------------------------ *
