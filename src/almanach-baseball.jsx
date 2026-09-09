@@ -502,6 +502,13 @@ function ChoixEquipe({ id, libelle, teams, suivies = [], valeur, onChange }) {
  *  VUE « LE CARNET »
  * ================================================================== */
 function VueAlmanach({ teams, appris, setAppris, suivies }) {
+  /* La feuille de match est tiree d'une fenetre qui finit « aujourd'hui ».
+     Sans cette dependance, la fenetre restait celle du jour d'ouverture de
+     l'onglet et le carnet ressassait la meme nuit indefiniment. On ne remet
+     PAS `reveil` ici : un simple retour sur l'onglet redepouillerait la
+     feuille et ferait perdre la notion en cours de lecture, pour un contenu
+     qui, lui, ne change qu'une fois par nuit. */
+  const nuitAuj = useNuitCourante();
   const [teamId, setTeamId] = useState(() => suivies[0] || 119);
   /* `suivies` est relu du stockage APRES le premier rendu : au montage, c'est
      encore la valeur par defaut. Sans ce rattrapage, qui suit une seule
@@ -603,7 +610,7 @@ function VueAlmanach({ teams, appris, setAppris, suivies }) {
     // rendus la ou il n'y a qu'un passage en attente, voulu et visible.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     charger(teamId);
-  }, [teamId, charger]);
+  }, [teamId, charger, nuitAuj]);
 
   const nouveaux = useMemo(
     () => sightings.filter((s) => !appris.includes(s.conceptId)),
@@ -2032,6 +2039,97 @@ const auPremierPlan = () =>
   document.visibilityState === "visible" &&
   (typeof document.hasFocus !== "function" || document.hasFocus());
 
+/* ------------------------------------------------------------------ *
+ *  LE JOUR QUI TOURNE
+ *
+ *  Cet onglet reste ouvert des jours d'affilee — c'est meme sa raison
+ *  d'etre. Or « aujourd'hui » etait partout lu UNE FOIS, a l'initialisation
+ *  d'un `useState` ou dans la closure d'un effet a dependances vides. La
+ *  date se figeait donc au montage : au deuxieme jour, la frise montrait
+ *  toujours la fenetre de la veille, et il fallait recharger la page pour
+ *  qu'elle se reveille.
+ *
+ *  Deux crochets reparent ca, et plus rien d'autre n'a le droit de lire
+ *  l'horloge pour s'ancrer.
+ * ------------------------------------------------------------------ */
+
+/* Une minute : personne ne compte les secondes avant un match qui en dure
+   dix mille, et c'est de toute facon le plancher que les navigateurs
+   imposent aux minuteurs d'un onglet cache. */
+const CADENCE_HORLOGE = 60e3;
+
+/* La nuit en cours, en etat React : elle change d'elle-meme a l'aube.
+   Il faut LES DEUX declencheurs. Le minuteur seul ne suffit pas — les
+   navigateurs le brident a un tic par minute des que l'onglet est cache,
+   le gelent au-dela de quelques minutes, et rien du tout ne tourne pendant
+   la veille de la machine. Le reveil seul ne suffit pas davantage : l'onglet
+   peut rester devant toute la nuit sans jamais repasser au premier plan.
+   On ne pousse un etat neuf que si la valeur a VRAIMENT change : sinon
+   chaque tic relancerait toutes les requetes qui en dependent. Rendre la
+   meme chaine fait sortir React sans re-rendu. */
+function useNuitCourante() {
+  const [nuit, setNuit] = useState(nuitCourante);
+  useEffect(() => {
+    const relire = () =>
+      setNuit((n) => {
+        const v = nuitCourante();
+        return v === n ? n : v;
+      });
+    const surVisible = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "visible") relire();
+    };
+    const id = setInterval(relire, CADENCE_HORLOGE);
+    document.addEventListener("visibilitychange", surVisible);
+    window.addEventListener("focus", relire);
+    // Retour depuis le cache de retour arriere (bfcache) : la page n'est pas
+    // remontee, aucun effet ne rejoue, seul cet evenement le dit.
+    window.addEventListener("pageshow", relire);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", surVisible);
+      window.removeEventListener("focus", relire);
+      window.removeEventListener("pageshow", relire);
+    };
+  }, []);
+  return nuit;
+}
+
+/* Compte les retours au premier plan. Mis en dependance d'un effet de
+   sondage, il le fait repartir tout de suite au lieu d'attendre le prochain
+   tic bride : c'est le cas « je rouvre le portable apres huit heures de
+   veille », ou le minuteur n'a plus tire depuis huit heures et tirera au
+   mieux dans une minute.
+   Le palier absorbe les rafales — masquer puis reafficher emet
+   visibilitychange, focus et parfois pageshow coup sur coup, et on ne veut
+   pas trois requetes pour un seul retour. */
+const PALIER_REVEIL = 10e3;
+
+function useReveil() {
+  const [reveil, setReveil] = useState(0);
+  const dernier = useRef(0);
+  useEffect(() => {
+    const eveiller = () => {
+      /* `visibilityState` et non `auPremierPlan` : un onglet visible dans une
+         fenetre qui n'a pas le focus — second ecran — est bel et bien
+         regarde, ses donnees doivent etre fraiches. */
+      if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+      const t = Date.now();
+      if (t - dernier.current < PALIER_REVEIL) return;
+      dernier.current = t;
+      setReveil((n) => n + 1);
+    };
+    document.addEventListener("visibilitychange", eveiller);
+    window.addEventListener("focus", eveiller);
+    window.addEventListener("pageshow", eveiller);
+    return () => {
+      document.removeEventListener("visibilitychange", eveiller);
+      window.removeEventListener("focus", eveiller);
+      window.removeEventListener("pageshow", eveiller);
+    };
+  }, []);
+  return reveil;
+}
+
 /* Safari exige que la demande parte d'un geste de l'utilisateur, et ses
    versions anciennes ne rendent pas de promesse : elles appellent un rappel.
    On accepte les deux formes plutot que de parier sur l'une. */
@@ -2429,13 +2527,30 @@ function ReglageAvertissements({ actif, sur, nbSuivies, permission = "default" }
    Elle se compte en nuits et non en jours de calendrier : `jourParis() - 1`
    tombait sur la nuit EN COURS des qu'il etait minuit passe, et la veille —
    celle des videos — disparaissait de la frise au moment precis ou l'on vient
-   les chercher. */
-function departFrise(maintenant = new Date()) {
-  return decalerJour(nuitCourante(maintenant), -1);
+   les chercher.
+   Elle prend la NUIT en cours, et ne lit pas l'horloge elle-meme : c'est ce
+   qui permet a l'appelant de la faire avancer toute seule au lieu de la figer
+   au montage. */
+function departFrise(nuit) {
+  return decalerJour(nuit, -1);
 }
 
 function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null, permission = "default" }) {
-  const [ancre, setAncre] = useState(departFrise);
+  /* L'ancre etait `useState(departFrise)` : l'initialiseur d'un `useState` ne
+     tourne qu'au montage, et cet onglet-la reste ouvert des jours — c'est
+     meme sa raison d'etre. La frise restait donc accrochee au jour de son
+     ouverture, sans que rien vienne jamais la corriger. Elle se DERIVE
+     maintenant de la nuit en cours, qui, elle, avance toute seule.
+
+     `ancreChoisie` a null veut dire « suis le jour ». Toute autre valeur est
+     un choix explicite de l'utilisateur, et on n'y touche pas : recaler AUSSI
+     une fenetre qu'il est alle chercher lui-meme la ferait sauter d'un cran a
+     l'aube, en pleine lecture — pire que le defaut qu'on corrige. Le bouton
+     « aujourd'hui » repasse a null, donc remet la frise a la poursuite. */
+  const nuitAuj = useNuitCourante();
+  const reveil = useReveil();
+  const [ancreChoisie, setAncreChoisie] = useState(null);
+  const ancre = ancreChoisie ?? departFrise(nuitAuj);
   const [matchs, setMatchs] = useState([]);
   const [phase, setPhase] = useState("load");
   const [erreur, setErreur] = useState("");
@@ -2566,9 +2681,14 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     return () => {
       annule = true;
     };
-  }, [ancre]); // volontairement pas `stadeHabituel` : il arrive plus tard et
-               // relancerait une requete inutile. Le terrain neutre se calcule
-               // au rendu, ci-dessous.
+    /* `ancre` avance maintenant toute seule a l'aube. `reveil` la double au
+       retour sur l'onglet : un horaire vieux d'une nuit annonce comme « a
+       venir » des matchs deja joues, et le minuteur qui l'aurait corrige a
+       ete gele par le navigateur.
+       Toujours pas `stadeHabituel` en revanche : il arrive plus tard et
+       relancerait une requete inutile. Le terrain neutre se calcule au
+       rendu, ci-dessous. */
+  }, [ancre, reveil]);
 
   const parId = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
   const divisionDe = useMemo(
@@ -2624,13 +2744,19 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
       .filter((x) => x.eq && x.b);
   }, [suivies, bilans, parId, toutes]);
 
-  // Horloge du compte a rebours : une minute suffit, personne ne compte
-  // les secondes avant un match qui dure trois heures.
+  /* Horloge du compte a rebours : une minute suffit, personne ne compte les
+     secondes avant un match qui dure trois heures. Mais le minuteur est bride
+     — voire gele — dans un onglet cache, et il ne tourne pas du tout pendant
+     la veille de la machine : au retour, l'heure affichee pouvait dater de
+     plusieurs heures. On la remet a l'endroit des le reveil, sans attendre le
+     tic suivant. */
   const [instant, setInstant] = useState(() => Date.now());
   useEffect(() => {
-    const id = setInterval(() => setInstant(Date.now()), 60000);
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setInstant(Date.now());
+    const id = setInterval(() => setInstant(Date.now()), CADENCE_HORLOGE);
     return () => clearInterval(id);
-  }, []);
+  }, [reveil]);
 
   /* LE DIRECT
      Hydrater linescore sur toute la fenetre couterait 76 Ko pour une donnee
@@ -2673,12 +2799,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         .catch(() => {});
     };
     tirer();
-    const id = setInterval(tirer, 60000);
+    const id = setInterval(tirer, CADENCE_HORLOGE);
     return () => {
       annule = true;
       clearInterval(id);
     };
-  }, [yaDuDirect]);
+  }, [yaDuDirect, reveil]);
 
   const ligneAppoint = spoilers || Object.keys(suspense).length > 0 || yaDuDirect;
   // Sur piste etroite on grossit les voies : une pastille de 18 px est
@@ -2851,15 +2977,17 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     <div className="alm-rise">
       {/* --- barre de controle --- */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 16 }}>
-        <button className="alm-btn" onClick={() => setAncre(decalerJour(ancre, -7))} style={btnStyle(false)}>
+        <button className="alm-btn" onClick={() => setAncreChoisie(decalerJour(ancre, -7))} style={btnStyle(false)}>
           ◂ semaine
         </button>
-        <button className="alm-btn" onClick={() => setAncre(decalerJour(ancre, 7))} style={btnStyle(false)}>
+        <button className="alm-btn" onClick={() => setAncreChoisie(decalerJour(ancre, 7))} style={btnStyle(false)}>
           semaine ▸
         </button>
+        {/* Rendre l'ancre au jour, plutot que de la fixer sur celui-ci : apres
+            ce clic la frise recommence a suivre le calendrier toute seule. */}
         <button
           className="alm-btn"
-          onClick={() => setAncre(departFrise())}
+          onClick={() => setAncreChoisie(null)}
           style={btnStyle(false)}
         >
           aujourd'hui
@@ -3573,6 +3701,12 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
     if (cible) setChoisi(Number(cible));
   }
   const [ceSoir, setCeSoir] = useState([]);
+  /* La nuit vient du crochet et non d'un appel direct a `nuitCourante()` :
+     dans la closure d'un effet monte une fois, elle se serait figee au jour de
+     l'ouverture de l'onglet, et la carte aurait continue d'allumer les parcs
+     de la veille. */
+  const nuit = useNuitCourante();
+  const reveil = useReveil();
 
   /* Les matchs de la nuit en cours, pour allumer les parcs concernes et
      tracer les deplacements. Requete minimale : deux journees, champs filtres. */
@@ -3584,7 +3718,6 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
     )
       .then((d) => {
         if (annule) return;
-        const nuit = nuitCourante();
         const out = [];
         for (const jr of d.dates || [])
           for (const g of jr.games || []) {
@@ -3607,7 +3740,7 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
     return () => {
       annule = true;
     };
-  }, []);
+  }, [nuit, reveil]);
 
   const parEquipe = useMemo(() => Object.fromEntries(teams.map((t) => [t.id, t])), [teams]);
   const parVenue = useMemo(() => {
@@ -4181,6 +4314,8 @@ function matchsDuDirect(jeux, maintenant = new Date()) {
 }
 
 function VueDirect({ teams, suivies = [] }) {
+  const nuit = useNuitCourante();
+  const reveil = useReveil();
   const [enCours, setEnCours] = useState([]);
   /* Quelle nuit la liste montre, et si c'est une retombee — la derniere nuit
      jouee, faute de match en cours. L'en-tete ne peut pas dire « cette nuit »
@@ -4263,7 +4398,13 @@ function VueDirect({ teams, suivies = [] }) {
       annule = true;
       clearInterval(id);
     };
-  }, []);
+    /* `tirer` relit bien la date a chaque appel — la fenetre, elle, n'etait
+       pas figee. Ce qui l'etait, c'est la CADENCE : le minuteur est bride a un
+       tic par minute dans un onglet cache, gele au-dela, et arrete net pendant
+       la veille de la machine. Sans ces deux dependances, revenir sur l'onglet
+       au matin montrait la liste de la veille jusqu'au premier tic voulant
+       bien partir. */
+  }, [nuit, reveil]);
 
   /* ------------------------------------------------------------------ *
      L'ABONNEMENT AUX POUSSEES
@@ -4294,14 +4435,9 @@ function VueDirect({ teams, suivies = [] }) {
      et la reconnexion en dependent aussi. Sans ce reveil, on revenait sur
      un match vieux de plusieurs dizaines de secondes, le temps que le
      prochain tic bride veuille bien partir.
-     Incrementer `pousse` suffit : c'est deja ce qui relance la requete. */
-  useEffect(() => {
-    const surRetour = () => {
-      if (document.visibilityState === "visible") setPousse((n) => n + 1);
-    };
-    document.addEventListener("visibilitychange", surRetour);
-    return () => document.removeEventListener("visibilitychange", surRetour);
-  }, []);
+     C'est `useReveil` qui tient ce role desormais, pour toute la page et
+     avec un palier anti-rafale : `reveil` figure dans les dependances des
+     deux effets ci-dessous, exactement la ou `pousse` figurait deja. */
 
   /* Le match suivi. Un appel filtre a 1,6 Ko, plus 2 Ko de probabilite. */
   useEffect(() => {
@@ -4336,7 +4472,7 @@ function VueDirect({ teams, suivies = [] }) {
       annule = true;
       if (id) clearInterval(id);
     };
-  }, [choisi, fini, pousse, poussevive]);
+  }, [choisi, fini, pousse, poussevive, reveil]);
 
   /* Charge seulement si le deroule est demande : il revele tout le match. */
   useEffect(() => {
@@ -4352,7 +4488,7 @@ function VueDirect({ teams, suivies = [] }) {
       annule = true;
       clearInterval(id);
     };
-  }, [choisi, spoilers, pousse]);
+  }, [choisi, spoilers, pousse, reveil]);
 
   const groupes = useMemo(() => grouperParManche(histoire), [histoire]);
   const totalActions = useMemo(
@@ -5269,6 +5405,9 @@ function circuitsDuMatch(pbp, match) {
 }
 
 function VueCircuits({ teams, suivies = [], stades = {} }) {
+  // Meme fenetre glissante que le carnet, meme raison de la faire suivre le
+  // jour : sans ca, l'onglet reste sur les circuits de la nuit d'ouverture.
+  const nuitAuj = useNuitCourante();
   const premiere = () => suivies[0] || 119;
   const [teamId, setTeamId] = useState(premiere);
   const [choisiAlaMain, setChoisiAlaMain] = useState(false);
@@ -5386,7 +5525,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     charger(teamId, toute);
-  }, [teamId, toute, charger]);
+  }, [teamId, toute, charger, nuitAuj]);
 
   /* Le calcul balistique : une dizaine de millisecondes par circuit, une
      seule fois, et jamais pendant le rendu. */
@@ -6524,6 +6663,12 @@ function Onglet({ id, actif, onChoisir, children }) {
 }
 
 export default function App() {
+  /* La nuit en cours et les retours au premier plan, une seule fois pour
+     toute la page : les vues qui en ont besoin les redemandent chacune de
+     leur cote, les crochets n'ont pas d'etat partage a proteger. */
+  const nuitAuj = useNuitCourante();
+  const reveil = useReveil();
+
   // Lu une seule fois a l'initialisation : un lien partage ouvre directement
   // la bonne vue. En rendu serveur, `location` n'existe pas.
   const [onglet, setOnglet] = useState(() =>
@@ -6662,7 +6807,13 @@ export default function App() {
       })
       .catch(() => {});
     return () => { annule = true; };
-  }, []);
+    /* Une seule requete au montage, et les bilans vieillissaient avec
+       l'onglet : au troisieme jour, la cote de rencontre et le nombre magique
+       se calculaient encore sur le classement du lundi. Ils bougent une fois
+       par nuit — on les relit donc a l'aube, et au retour sur l'onglet.
+       `saison` est relue du meme coup : au 1er janvier, l'ancienne closure
+       aurait continue d'interroger l'annee precedente. */
+  }, [nuitAuj, reveil]);
 
   /* La liste des trente franchises alimente TOUS les menus. Son echec etait
      avale en silence : le repli d'un seul club code en dur prenait le relais,

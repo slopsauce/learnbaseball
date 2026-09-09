@@ -1926,7 +1926,9 @@ describe("le départ de la frise", () => {
   /* La frise ouvre sur la nuit PRECEDENTE : ses matchs sont joues, donc
      notes, resumes et filmes. C'est la seule ou il y ait quelque chose a
      regarder tout de suite — la raison meme d'ouvrir cet onglet. */
-  const d = (iso) => A.departFrise(new Date(iso));
+  // `departFrise` prend la NUIT en cours et non plus l'horloge : c'est ce qui
+  // permet a la frise de la faire avancer au lieu de la figer au montage.
+  const d = (iso) => A.departFrise(A.nuitCourante(new Date(iso)));
 
   test("elle commence toujours une nuit avant celle en cours", () => {
     for (const iso of [
@@ -1959,6 +1961,61 @@ describe("le départ de la frise", () => {
     // A 14h le samedi, la nuit en cours est celle du samedi : on ouvre sur
     // celle du vendredi, jouee la nuit derniere.
     assert.equal(d("2026-08-08T12:00:00Z"), "2026-08-07");
+  });
+});
+
+describe("l'ancre de la frise suit le jour", () => {
+  /* LE BUG : l'ancre etait `useState(departFrise)`, et `departFrise` lisait
+     l'horloge. Or l'initialiseur d'un `useState` ne tourne qu'au montage, et
+     cet onglet-la reste ouvert des jours d'affilee — c'est sa raison d'etre.
+     Au deuxieme jour la frise montrait donc toujours la fenetre de la veille,
+     et rien, ni minuteur ni retour au premier plan, ne venait la corriger : il
+     fallait recharger la page.
+     `departFrise` prend desormais la nuit en argument, et VueNuits la lui
+     passe depuis un etat qui avance tout seul a l'aube. Ce que ce bloc
+     verifie, c'est la regle que la vue applique :
+        ancre = ancreChoisie ?? departFrise(nuitEnCours) */
+  const ancre = (choisie, nuit) => choisie ?? A.departFrise(nuit);
+
+  test("sans choix, l'ancre est la veille de la nuit en cours", () => {
+    assert.equal(ancre(null, "2026-08-07"), "2026-08-06");
+  });
+
+  test("elle avance d'elle-même quand la nuit change", () => {
+    // La meme expression, deux nuits de suite : c'est tout ce que
+    // l'ancienne ancre figee ne savait pas faire.
+    const hier = ancre(null, "2026-08-07");
+    const auj = ancre(null, "2026-08-08");
+    assert.equal(hier, "2026-08-06");
+    assert.equal(auj, "2026-08-07");
+    assert.notEqual(hier, auj, "un onglet ouvert deux jours doit voir sa frise bouger");
+  });
+
+  test("une fenêtre choisie à la main ne glisse pas sous les yeux", () => {
+    /* Le contre-poison du correctif : recaler AUSSI la frise que
+       l'utilisateur est alle chercher lui-meme la ferait sauter d'un cran a
+       l'aube, en pleine lecture. Le choix prime, quelle que soit la nuit. */
+    for (const nuit of ["2026-08-07", "2026-08-08", "2026-09-30"]) {
+      assert.equal(ancre("2026-05-02", nuit), "2026-05-02");
+    }
+  });
+
+  test("le passage de l'aube fait bouger l'ancre d'exactement une nuit", () => {
+    // 06h59 puis 07h00 a Paris : c'est la minute ou la frise doit avancer.
+    const avant = ancre(null, A.nuitCourante(new Date("2026-08-08T04:59:00Z")));
+    const apres = ancre(null, A.nuitCourante(new Date("2026-08-08T05:00:00Z")));
+    assert.equal(avant, "2026-08-06");
+    assert.equal(apres, "2026-08-07");
+    assert.equal(A.decalerJour(avant, 1), apres);
+  });
+
+  test("le départ ne lit plus l'horloge lui-même", () => {
+    /* Le garde-fou contre la rechute : si `departFrise` se remettait a lire
+       `new Date()` par defaut, un appelant qui oublie de lui passer la nuit
+       repartirait sur une valeur figee sans que rien ne le signale. Sans
+       argument, elle doit echouer visiblement. */
+    assert.throws(() => A.departFrise(undefined), RangeError,
+      "un départ sans nuit doit échouer bruyamment, pas inventer une date");
   });
 });
 
