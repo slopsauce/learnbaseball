@@ -53,6 +53,18 @@ describe("rendu des composants", () => {
     assert.ok(html.length > 100);
   });
 
+  test("VueNuits garde le retour au jour", () => {
+    /* Le bouton « aujourd'hui » ne fixe plus l'ancre sur la date du clic : il
+       la rend au calendrier (`setAncreChoisie(null)`), donc la frise se remet
+       a suivre le jour. Le rendu garde une trace de sa presence — sans lui,
+       une frise que l'utilisateur a fait defiler n'aurait plus aucun moyen de
+       revenir a la poursuite automatique. */
+    const html = rendre(React.createElement(VueNuits, {
+      teams: [equipe], suivies: [119], setSuivies: () => {},
+    }));
+    assert.match(html, /aujourd&#x27;hui|aujourd'hui/);
+  });
+
   test("VueNuits se rend en mode toutes equipes", () => {
     assert.ok(rendre(React.createElement(VueNuits, {
       teams: [equipe], suivies: [], setSuivies: () => {}, bilans: bilan,
