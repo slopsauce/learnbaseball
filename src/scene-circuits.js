@@ -379,6 +379,33 @@ function ruban(points, hauteur, couleur) {
   return new Mesh(g, new MeshLambertMaterial({ color: couleur, side: DoubleSide }));
 }
 
+/* Ruban plat POSE SUR LA PELOUSE le long d'une polyligne : la projection
+   d'un vol vue d'en haut. WebGL ne sait pas epaissir une ligne — elle fait
+   un pixel, quoi qu'on demande — d'ou un vrai ruban, large de quelques
+   pieds, decale de part et d'autre de la trace perpendiculairement a sa
+   marche. Non eclaire : la couleur de l'equipe doit rester la meme quel
+   que soit l'angle de la lumiere, c'est une legende, pas un objet. */
+function traceAuSol(points, largeur, couleur) {
+  const pos = [], idx = [];
+  const n = points.length;
+  for (let i = 0; i < n; i++) {
+    const [x, y] = points[i];
+    const [ax, ay] = points[Math.max(0, i - 1)], [bx, by] = points[Math.min(n - 1, i + 1)];
+    const dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1;
+    // La normale au sol, a mi-largeur, dans le repere de three (x, hauteur, -y)
+    const nx = (-dy / l) * (largeur / 2), ny = (dx / l) * (largeur / 2);
+    pos.push(x + nx, 0, -(y + ny), x - nx, 0, -(y - ny));
+    if (i < n - 1) {
+      const b = 2 * i;
+      idx.push(b, b + 2, b + 1, b + 1, b + 2, b + 3);
+    }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute("position", new Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return new Mesh(g, new MeshBasicMaterial({ color: couleur, transparent: true, side: DoubleSide }));
+}
+
 /* Une etiquette de distance, peinte sur un canevas puis collee au mur. */
 function etiquette(texte, couleur = "#eff3ea") {
   const cv = document.createElement("canvas");
@@ -434,9 +461,11 @@ function rubanSol(interieur, exterieur, h, couleur) {
  *               scene. La scene ne garde pas ce choix : c'est la vue qui
  *               decide, et qui rappelle `choisir` — le meme chemin que la
  *               liste sous la scene, pour qu'il n'y en ait qu'un.
- *  Rend une poignee : { choisir, redimensionner, detruire }.
+ *  `auSol`    : dessiner la projection de chaque vol sur la pelouse. La
+ *               poignee permet de basculer sans remonter la scene.
+ *  Rend une poignee : { choisir, projeter, redimensionner, detruire }.
  * ------------------------------------------------------------------ */
-export function monterScene(conteneur, { circuits, idStade, stade, animer = true, surChoix }) {
+export function monterScene(conteneur, { circuits, idStade, stade, animer = true, surChoix, auSol = false }) {
   const parc = construireMur(idStade, stade);
   const mur = parc.mur;
   const gradins = parc.contour ? tribunes(parc.contour, stade || {}) : null;
@@ -468,7 +497,10 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
      Les tribunes ne l'ont pas fait reculer : c'est le BOL qui s'ouvre du
      cote de la camera. Reculer jusqu'a passer par-dessus les gradins
      rendait la trajectoire — ce qu'on est venu voir — large d'un pixel. */
-  let theta = 0, phi = 1.24;
+  /* Plus haut d'emblee quand la projection au sol est demandee : une trace
+     sur la pelouse se lit d'en haut. La scene se remonte a chaque nouveau
+     lot de circuits, et ne doit pas retomber au ras du gazon a chaque fois. */
+  let theta = 0, phi = auSol ? 0.8 : 1.24;
   const etroit = conteneur.clientWidth < 520;
   let rayon = gradins ? (etroit ? 600 : 540) : (etroit ? 560 : 430);
   const placerCamera = () => {
@@ -617,12 +649,19 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
       new BufferGeometry().setFromPoints(points.map(([x, y]) => new Vector3(x, 0.6, -y))),
       new LineBasicMaterial({ color: 0x182a1e, transparent: true, opacity: 0.4 })
     );
+    /* La projection au sol, dans la couleur de l'equipe : le vol vu d'en
+       haut, le seul angle ou le crochet — et l'endroit exact ou la balle
+       passe le mur — se lisent sans ambiguite. Sous le disque de chute,
+       au-dessus de la pelouse : les trois ne doivent pas se disputer le
+       meme plan, sinon ils clignotent. */
+    const sol = traceAuSol(points, 2.4, couleur);
+    sol.position.y = 0.55;
     const fin = points[points.length - 1];
     const chute = new Mesh(new CircleGeometry(2.6, 16), new MeshBasicMaterial({ color: couleur }));
     chute.rotation.x = -Math.PI / 2;
     chute.position.set(fin[0], 0.7, -fin[1]);
     const grp = new Group();
-    grp.add(tube, ombre, chute);
+    grp.add(tube, ombre, sol, chute);
     /* La zone de prise : le tube dessine fait moins d'un pied de rayon —
        introuvable a la souris, impossible au doigt. Chaque trajectoire
        porte donc un second tube, invisible et large de sept pieds, qui ne
@@ -637,8 +676,26 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
       prises.push(prise);
     }
     scene.add(grp);
-    return { tube, v };
+    return { tube, ombre, sol, v };
   });
+
+  /* Les opacites, en un seul endroit : elles dependent de deux choses a la
+     fois — le circuit choisi et la projection au sol — et les regler depuis
+     deux methodes separees les faisait se marcher dessus. Au sol, le tube en
+     l'air s'efface a moitie pour laisser la pelouse porter le trait ; le
+     filet d'ombre gris, lui, n'a plus rien a dire et s'eteint. */
+  let choisi = -1, projete = false;
+  const appliquerOpacites = () => {
+    tracés.forEach((tr, k) => {
+      const mis = choisi < 0 || k === choisi;
+      tr.tube.material.opacity = (projete ? 0.3 : 0.92) * (mis ? 1 : 0.13);
+      tr.ombre.visible = !projete;
+      tr.sol.visible = projete;
+      tr.sol.material.opacity = mis ? 0.9 : 0.18;
+    });
+  };
+  projete = !!auSol;
+  appliquerOpacites();
 
   const balle = new Mesh(new SphereGeometry(2.6, 16, 12), new MeshLambertMaterial({ color: 0xffffff }));
   balle.visible = false;
@@ -705,7 +762,7 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
   renderer.domElement.addEventListener("touchend", surPinceFin);
 
   // --- boucle ---
-  let choisi = -1, t = 0, duree = 0, vivant = true;
+  let t = 0, duree = 0, vivant = true;
   const horloge = new Clock();
   const tourner = () => {
     if (!vivant) return;
@@ -729,7 +786,7 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
     },
     choisir(i, volSecondes) {
       choisi = i;
-      tracés.forEach((tr, k) => { tr.tube.material.opacity = i < 0 || k === i ? 0.92 : 0.12; });
+      appliquerOpacites();
       if (i >= 0) {
         t = 0;
         duree = Math.max(0.8, (volSecondes || 4) * 1.6);
@@ -744,6 +801,15 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
       } else {
         balle.visible = false;
       }
+    },
+    /* La projection au sol, allumee ou eteinte sans remonter la scene. En
+       l'allumant on releve un peu la camera si elle est basse : une trace
+       sur la pelouse se lit d'en haut, pas au ras du gazon. On ne la
+       rabaisse pas en eteignant — la camera appartient a qui la tourne. */
+    projeter(actif) {
+      projete = !!actif;
+      appliquerOpacites();
+      if (projete && phi > 0.95) { phi = 0.8; placerCamera(); }
     },
     redimensionner() {
       const l = conteneur.clientWidth, h = conteneur.clientHeight;

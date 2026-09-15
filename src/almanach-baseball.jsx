@@ -5425,6 +5425,10 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
      spray. Retenue d'une visite a l'autre, comme les autres reglages. */
   const [crochet, setCrochet] = useState(() => lireReglage("crochet", false));
   const basculerCrochet = (v) => { setCrochet(v); saveState({ crochet: v }); };
+  /* La projection au sol : le vol vu d'en haut, dessine sur la pelouse.
+     Pure lecture, rien d'estime — c'est la meme courbe, ecrasee au sol. */
+  const [auSol, setAuSol] = useState(() => lireReglage("auSol", false));
+  const basculerAuSol = (v) => { setAuSol(v); saveState({ auSol: v }); };
   const [brut, setBrut] = useState([]);
   const [phase, setPhase] = useState("load");  // load | ok | vide | erreur
   const [erreur, setErreur] = useState("");
@@ -5612,16 +5616,28 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
         {/* A part des deux autres : ce n'est pas un choix de matchs, c'est un
             choix de LECTURE. Eteint, la scene ne montre que ce qui est mesure ;
             allume, elle y ajoute une courbure typique, et le dit. */}
-        <button
-          className="alm-btn"
-          onClick={() => basculerCrochet(!crochet)}
-          aria-pressed={crochet}
-          title="Courber les trajectoires selon la rotation latérale typique de leur angle de spray — une estimation, pas une mesure"
-          style={{ ...btnStyle(false), marginLeft: "auto",
-            borderColor: crochet ? T.sodium : "rgba(239,243,234,.3)", color: crochet ? T.sodium : T.chalk }}
-        >
-          Crochet estimé {crochet ? "· oui" : "· non"}
-        </button>
+        <span style={{ display: "flex", gap: 8, flexWrap: "wrap", marginLeft: "auto" }}>
+          <button
+            className="alm-btn"
+            onClick={() => basculerAuSol(!auSol)}
+            aria-pressed={auSol}
+            title="Dessiner sur la pelouse la projection de chaque trajectoire — le vol vu d'en haut"
+            style={{ ...btnStyle(false),
+              borderColor: auSol ? T.sodium : "rgba(239,243,234,.3)", color: auSol ? T.sodium : T.chalk }}
+          >
+            Au sol {auSol ? "· oui" : "· non"}
+          </button>
+          <button
+            className="alm-btn"
+            onClick={() => basculerCrochet(!crochet)}
+            aria-pressed={crochet}
+            title="Courber les trajectoires selon la rotation latérale typique de leur angle de spray — une estimation, pas une mesure"
+            style={{ ...btnStyle(false),
+              borderColor: crochet ? T.sodium : "rgba(239,243,234,.3)", color: crochet ? T.sodium : T.chalk }}
+          >
+            Crochet estimé {crochet ? "· oui" : "· non"}
+          </button>
+        </span>
       </div>
 
       {!toute && (
@@ -5694,6 +5710,7 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             idStade={idStade}
             stade={stade}
             ouvert={ouvert}
+            auSol={auSol}
             onParc={setParc}
             onChoisir={surChoixScene}
           />
@@ -5759,6 +5776,14 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
             Magnus, intégrés pas à pas. La rotation de la balle n'est pas publiée : on retient celle
             qui fait retomber la balle à la distance annoncée, ce qui absorbe aussi le vent. L'apex
             et le temps de vol sont donc des estimations, pas des mesures.
+            {auSol && (
+              <>
+                <br />
+                <strong>Au sol</strong> : la trace de chaque vol projetée sur la pelouse, dans la
+                couleur de l'équipe — le vol vu d'en haut, le seul angle où l'on voit où la balle
+                passe le mur et de combien elle dévie. Le disque marque le point de chute mesuré.
+              </>
+            )}
             {crochet ? (
               <>
                 <br />
@@ -5933,11 +5958,18 @@ function ClipCircuit({ circuit }) {
    c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
    n'execute pas les effets, donc rien de tout cela ne part en cascade dans
    les tests ou dans une prerendue. */
-function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) {
+function SceneCircuits({ circuits, idStade, stade, ouvert, auSol = false, onParc, onChoisir }) {
   const boite = useRef(null);
   const poignee = useRef(null);
   const [etat, setEtat] = useState("attente"); // attente | prete | refus
   const doux = useRef(true);
+  /* Lue par le montage sans figurer dans ses dependances : basculer la
+     projection ne doit pas remonter la scene — et perdre la camera — mais
+     la scene remontee pour un nouveau lot de circuits doit partir dans le
+     bon etat. Mise a jour dans un effet, declare AVANT celui du montage :
+     les effets tournent dans l'ordre, la valeur est donc fraiche. */
+  const auSolRef = useRef(auSol);
+  useEffect(() => { auSolRef.current = auSol; }, [auSol]);
 
   useEffect(() => {
     let vivant = true;
@@ -5953,6 +5985,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
           stade,
           animer: doux.current,
           surChoix: onChoisir,
+          auSol: auSolRef.current,
         });
         setEtat("prete");
         onParc?.(poignee.current.parc);
@@ -5969,6 +6002,10 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
     const i = circuits.findIndex((c) => c.cle === ouvert);
     poignee.current?.choisir(i, circuits[i]?.duree);
   }, [ouvert, circuits, etat]);
+
+  useEffect(() => {
+    poignee.current?.projeter(auSol);
+  }, [auSol, etat]);
 
   useEffect(() => {
     const surTaille = () => poignee.current?.redimensionner();

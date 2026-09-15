@@ -717,6 +717,9 @@ describe("rendu de la vue Circuits", () => {
     const html = rendre(React.createElement(VueCircuits, { teams: [equipe], suivies: [119] }));
     assert.match(html, /Ce match/);
     assert.match(html, /Toute la nuit/);
+    // Les deux lectures optionnelles sont la, eteintes par defaut.
+    assert.match(html, /Au sol · non/);
+    assert.match(html, /Crochet estimé · non/);
     assert.doesNotMatch(html, /<canvas/, "aucun canvas au rendu serveur");
   });
 
