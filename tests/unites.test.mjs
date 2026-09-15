@@ -2657,3 +2657,73 @@ describe("classement — répartition et tri des ligues", () => {
     assert.equal(vide[104].meneurs.length + vide[104].chasse.length, 2);
   });
 });
+
+describe("classement — le tableau par division", () => {
+  const eq = (id, name, div) => ({ id, name, abbreviation: "", division: { id: 0, name: div } });
+  const equipes = [
+    eq(117, "Houston Astros", "American League West"),
+    eq(116, "Detroit Tigers", "American League Central"),
+    eq(111, "Boston Red Sox", "American League East"),
+    eq(139, "Tampa Bay Rays", "American League East"),
+    eq(147, "New York Yankees", "American League East"),
+    eq(121, "New York Mets", "National League East"),
+    eq(119, "Los Angeles Dodgers", "National League West"),
+    { id: 999, name: "Sans division" },
+  ];
+  const bilans = {
+    139: { pct: 0.594, rang: 1, meneur: true, magique: 32 },
+    147: { pct: 0.570, rang: 2, meneur: false, retard: 3, wc: -9.5 },
+    111: { pct: 0.539, rang: 3, meneur: false, retard: 7, wc: -5.5 },
+    116: { pct: 0.586, rang: 1, meneur: true },
+    117: { pct: 0.547, rang: 1, meneur: true },
+    119: { pct: 0.625, rang: 1, meneur: true, clinche: true },
+    121: { pct: 0.469, rang: 4, meneur: false, retard: 20, elimination: 0, elimWc: 0 },
+  };
+  const d = A.classementDivisions(equipes, bilans);
+
+  test("Est, Centre, Ouest — l'ordre officiel, pas celui d'arrivée", () => {
+    assert.deepEqual(d[103].map((x) => x.nom),
+      ["American League East", "American League Central", "American League West"]);
+    assert.deepEqual(d[104].map((x) => x.nom),
+      ["National League East", "National League West"]);
+    assert.equal(A.ORDRE_DIVISION("American League East"), 0);
+    assert.equal(A.ORDRE_DIVISION("National League West"), 2);
+  });
+  test("dans une division, les équipes suivent le rang de l'API", () => {
+    assert.deepEqual(d[103][0].equipes.map((x) => x.eq.id), [139, 147, 111]);
+  });
+  test("une équipe sans bilan ferme la marche, une équipe sans division n'apparaît pas", () => {
+    const avec = A.classementDivisions(
+      [...equipes, eq(110, "Baltimore Orioles", "American League East")], bilans);
+    const ids = avec[103][0].equipes.map((x) => x.eq.id);
+    assert.equal(ids[ids.length - 1], 110);
+    const tous = [...d[103], ...d[104]].flatMap((x) => x.equipes.map((y) => y.eq.id));
+    assert.ok(!tous.includes(999));
+  });
+  test("sans rang, le bilan départage", () => {
+    const sans = A.classementDivisions(equipes, {
+      139: { pct: 0.5 }, 147: { pct: 0.6 }, 111: { pct: 0.55 },
+    });
+    assert.deepEqual(sans[103][0].equipes.map((x) => x.eq.id), [147, 111, 139]);
+  });
+  test("le dernier nombre : l'enjeu du meneur, le retard des autres", () => {
+    assert.equal(A.ecartDivision(bilans[139]), "magique 32");
+    assert.equal(A.ecartDivision(bilans[119]), "qualifiée");
+    assert.equal(A.ecartDivision(bilans[116]), "—");
+    assert.equal(A.ecartDivision(bilans[147]), "3.0");
+    assert.equal(A.ecartDivision({ meneur: false }), "");
+    assert.equal(A.ecartDivision(null), "");
+  });
+  test("le rang, et « wc » pour celles qui tiennent une place de wild card", () => {
+    assert.equal(A.etiquetteDivision(bilans[139]), "1er");
+    assert.equal(A.etiquetteDivision(bilans[147]), "2e wc");
+    assert.equal(A.etiquetteDivision(bilans[121]), "4e");
+    assert.equal(A.etiquetteDivision({ pct: 0.5 }, 2), "3e", "sans rang, la position en tient lieu");
+    assert.equal(A.etiquetteDivision(null, 0), "1er");
+  });
+  test("une équipe ne se grise que les deux portes fermées", () => {
+    assert.equal(A.horsCourse(bilans[121]), true);
+    assert.equal(A.horsCourse({ elimination: 0, elimWc: 4 }), false);
+    assert.equal(A.horsCourse(null), false);
+  });
+});
