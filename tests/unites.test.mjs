@@ -2658,6 +2658,28 @@ describe("classement — répartition et tri des ligues", () => {
   });
 });
 
+describe("saisonClose — quand un classement cesse d'être une course", () => {
+  test("une saison d'une année passée est close, date de fin ou pas", () => {
+    assert.equal(A.saisonClose(2025, null, "2026-01-03"), true);
+    assert.equal(A.saisonClose(2025, "2025-09-28", "2026-01-03"), true);
+  });
+  test("l'année en cours : close seulement APRÈS la date de fin de saison régulière", () => {
+    assert.equal(A.saisonClose(2026, "2026-09-27", "2026-09-15"), false);
+    assert.equal(A.saisonClose(2026, "2026-09-27", "2026-09-27"), false, "le dernier jour se joue encore");
+    assert.equal(A.saisonClose(2026, "2026-09-27", "2026-09-28"), true);
+    assert.equal(A.saisonClose(2026, "2026-09-27", "2026-11-20"), true);
+  });
+  test("sans date de fin, on retombe sur l'année : octobre passe pour vivant, comme avant", () => {
+    assert.equal(A.saisonClose(2026, null, "2026-10-20"), false);
+  });
+  test("sans saison, rien à dire", () => {
+    assert.equal(A.saisonClose(null, "2026-09-27", "2026-12-01"), false);
+  });
+  test("la date d'une autre saison ne compte pas — l'ouverture ne clignote pas", () => {
+    assert.equal(A.saisonClose(2027, "2026-09-27", "2027-03-26"), false);
+  });
+});
+
 describe("classement — le tableau par division", () => {
   const eq = (id, name, div) => ({ id, name, abbreviation: "", division: { id: 0, name: div } });
   const equipes = [

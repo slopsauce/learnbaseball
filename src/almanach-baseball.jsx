@@ -2535,7 +2535,7 @@ function departFrise(nuit) {
   return decalerJour(nuit, -1);
 }
 
-function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, notifs = false, setNotifs = null, permission = "default" }) {
+function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {}, stades = {}, saisonBilans = null, bilansClos = false, notifs = false, setNotifs = null, permission = "default" }) {
   /* L'ancre etait `useState(departFrise)` : l'initialiseur d'un `useState` ne
      tourne qu'au montage, et cet onglet-la reste ouvert des jours — c'est
      meme sa raison d'etre. La frise restait donc accrochee au jour de son
@@ -3222,9 +3222,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
             </div>
           )}
 
-          {/* Hors saison, les bilans viennent de l'annee precedente : le dire,
-              sinon les cotes et le classement passent pour l'actualite. */}
-          {saisonBilans != null && saisonBilans !== new Date().getFullYear() && (
+          {/* Saison reguliere finie, les bilans sont un tableau final : le
+              dire, sinon les cotes et le classement passent pour l'actualite.
+              `App` tranche (voir saisonClose), la vue ne fait qu'afficher. */}
+          {bilansClos && saisonBilans != null && (
             <p
               style={{
                 fontFamily: FF_MONO, fontSize: 10.5, color: T.sodium,
@@ -3232,8 +3233,8 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
                 padding: "8px 12px", margin: "0 0 18px", lineHeight: 1.5,
               }}
             >
-              Hors saison : bilans, cotes et classement sont ceux de {saisonBilans}, à leur
-              dernier jour. Ils ne décrivent pas une course en cours.
+              La saison régulière {saisonBilans} est finie : bilans, cotes et classement sont
+              ceux de son dernier jour. Ils ne décrivent plus une course en cours.
             </p>
           )}
 
@@ -6039,6 +6040,23 @@ function lireCompte(x) {
 
 const LIGUE_FR = { 103: "Ligue américaine", 104: "Ligue nationale" };
 
+/* La saison reguliere des bilans est-elle finie ? Le bandeau « ce n'est
+   plus une course » ne s'affichait qu'au changement d'annee : du dernier
+   match de septembre au 31 decembre, un tableau clos passait pour vivant.
+   Le tableau final lui-meme ne le dit pas — l'API y laisse des nombres
+   d'elimination non nuls (Astros et Mets 2025 : « 1 » au wild card, 162
+   matchs joues). C'est donc la date de fin de saison reguliere, lue sur
+   `seasons`, qui tranche ; sans elle, on retombe sur l'annee. Strictement
+   APRES la date : le dernier jour, les matchs se jouent encore. Une date
+   d'une autre saison ne compte pas : a l'ouverture, les bilans changent
+   d'annee un instant avant que la nouvelle date n'arrive. */
+function saisonClose(saison, finReguliere, aujourdhui = jourParis()) {
+  if (saison == null) return false;
+  if (saison < Number(String(aujourdhui).slice(0, 4))) return true;
+  const fin = String(finReguliere || "");
+  return fin.startsWith(`${saison}-`) && String(aujourdhui) > fin;
+}
+
 /* « American League East » → « Est » : dans un bloc deja titre du nom de
    la ligue, repeter AL ou NL sur chaque ligne ne dirait rien de plus. */
 const divisionCourte = (n = "") => DIVISION_FR(n).replace(/^(AL|NL)\s*/, "");
@@ -6342,7 +6360,7 @@ function allerLecture(id) {
   }
 }
 
-function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies = [], cible = null }) {
+function VueClassement({ teams = [], bilans = {}, saisonBilans = null, bilansClos = false, suivies = [], cible = null }) {
   const [lecture, setLecture] = useState(() =>
     cible ? lectureDepuisCible(cible) : lireReglage("lectureClassement", "course")
   );
@@ -6405,9 +6423,10 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies =
         proportion de victoires — .500, c'est une victoire sur deux.
       </p>
 
-      {/* Meme note que le programme : hors saison, ces bilans sont ceux de
-          l'annee derniere, et un classement final n'est pas une course. */}
-      {saisonBilans != null && saisonBilans !== new Date().getFullYear() && (
+      {/* Meme note que le programme : saison reguliere finie, ces bilans sont
+          un tableau final, et un tableau final n'est pas une course. `App`
+          tranche (voir saisonClose), la vue ne fait qu'afficher. */}
+      {bilansClos && saisonBilans != null && (
         <p
           style={{
             fontFamily: FF_MONO, fontSize: 10.5, color: T.sodium,
@@ -6415,8 +6434,8 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies =
             padding: "8px 12px", margin: "0 0 18px", lineHeight: 1.5,
           }}
         >
-          Hors saison : ce classement est celui de {saisonBilans}, à son dernier jour. Il ne
-          décrit pas une course en cours.
+          La saison régulière {saisonBilans} est finie : ce classement est son tableau final,
+          au dernier jour. Il ne décrit plus une course en cours.
         </p>
       )}
 
@@ -6895,6 +6914,8 @@ export default function App() {
   // base de la cote de rencontre (log5).
   const [bilans, setBilans] = useState({});
   const [saisonBilans, setSaisonBilans] = useState(null);
+  // Date de fin de saison reguliere des bilans affiches — voir saisonClose.
+  const [finBilans, setFinBilans] = useState(null);
   useEffect(() => {
     let annule = false;
 
@@ -6965,6 +6986,14 @@ export default function App() {
         if (annule || !Object.keys(m).length) return;
         setBilans(m);
         setSaisonBilans(s);
+        /* La date de fin se lit a part, et son echec ne prive de rien : sans
+           elle, saisonClose retombe sur l'annee, comme avant. */
+        return jsonMlb(`${API}/seasons?sportId=1&season=${s}&fields=seasons,seasonId,regularSeasonEndDate`)
+          .then((d) => {
+            if (annule) return;
+            setFinBilans(d.seasons?.[0]?.regularSeasonEndDate || null);
+          })
+          .catch(() => {});
       })
       .catch(() => {});
     return () => { annule = true; };
@@ -6975,6 +7004,9 @@ export default function App() {
        `saison` est relue du meme coup : au 1er janvier, l'ancienne closure
        aurait continue d'interroger l'annee precedente. */
   }, [nuitAuj, reveil]);
+  /* Calcule sur la nuit courante, pas sur la date : le dernier soir de la
+     saison reguliere se joue jusqu'au petit matin de Paris. */
+  const bilansClos = saisonClose(saisonBilans, finBilans, nuitAuj);
 
   /* La liste des trente franchises alimente TOUS les menus. Son echec etait
      avale en silence : le repli d'un seul club code en dur prenait le relais,
@@ -7195,6 +7227,7 @@ ${POLICES}
             teams={teams}
             bilans={bilans}
             saisonBilans={saisonBilans}
+            bilansClos={bilansClos}
             suivies={suivies}
             cible={cible}
           />
@@ -7226,6 +7259,7 @@ ${POLICES}
             stadeHabituel={stadeHabituel}
             bilans={bilans}
             saisonBilans={saisonBilans}
+            bilansClos={bilansClos}
             stades={stades}
             notifs={notifs}
             setNotifs={majNotifs}
@@ -7311,7 +7345,7 @@ export {
   // vue « le classement »
   VueClassement, classementLigues, classementDivisions, lireEcart, lireCompte, ecartWc, pctCourt, divisionCourte,
   ecartDivision, etiquetteDivision, horsCourse, ORDRE_DIVISION,
-  LigneClassement, LaLigne, BlocLigue, BlocDivisions, LIGUE_FR,
+  LigneClassement, LaLigne, BlocLigue, BlocDivisions, LIGUE_FR, saisonClose,
   // vue « le carnet »
   VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,
