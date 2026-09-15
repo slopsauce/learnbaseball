@@ -6010,10 +6010,12 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
  *  VUE « LE CLASSEMENT »
  *  La course telle que la MLB la juge : six qualifiees par ligue, les
  *  trois championnes de division puis trois wild cards — les meilleures
- *  du reste, divisions confondues. La vue montre exactement cela, et
- *  rien d'autre : pas de tableau par division, deja esquisse dans les
- *  fiches d'equipes, mais la LIGNE, celle qui separe une saison
- *  d'octobre d'une saison d'aout.
+ *  du reste, divisions confondues. La vue montre d'abord cela : la
+ *  LIGNE, celle qui separe une saison d'octobre d'une saison d'aout.
+ *  Une seconde lecture, « par division », donne le tableau tel qu'on
+ *  l'imprime : six blocs de cinq, avec le retard sur la tete. C'est
+ *  le classement que tout le monde connait — et c'est pour cela qu'il
+ *  vient en second : la course, elle, ne se lit nulle part ailleurs.
  * ------------------------------------------------------------------ */
 /* L'API ecrit les ecarts en chaines : « - » quand la valeur est sans
    objet, « 9.5 » pour un retard, « +9.5 » pour une AVANCE sur la ligne
@@ -6077,6 +6079,40 @@ function classementLigues(teams = [], bilans = {}) {
     });
   }
   return ligues;
+}
+
+/* Est, Centre, Ouest : l'ordre des tableaux officiels, pas l'alphabet. */
+const ORDRE_DIVISION = (n = "") =>
+  /East/.test(n) ? 0 : /Central/.test(n) ? 1 : /West/.test(n) ? 2 : 3;
+
+/* Le tableau par division : par ligue, les trois divisions dans l'ordre
+   officiel, et dans chacune les equipes au rang que l'API leur donne —
+   il departage les egalites (confrontations directes) mieux qu'un tri
+   par bilan. Une equipe sans bilan ferme la marche de sa division, et une
+   division inconnue est ignoree : elle n'a pas de tableau ou aller. Le
+   regroupement se fait sur le NOM, comme le tri par ligue : c'est lui que
+   l'API garantit, l'identifiant n'est qu'un a-cote. */
+function classementDivisions(teams = [], bilans = {}) {
+  const ligues = { 103: new Map(), 104: new Map() };
+  for (const eq of teams) {
+    const nomDiv = eq.division?.name || "";
+    const ligue = nomDiv.startsWith("American") ? 103 : nomDiv.startsWith("National") ? 104 : null;
+    if (!ligue) continue;
+    if (!ligues[ligue].has(nomDiv)) ligues[ligue].set(nomDiv, { id: nomDiv, nom: nomDiv, equipes: [] });
+    ligues[ligue].get(nomDiv).equipes.push({ eq, b: bilans[eq.id] || null });
+  }
+  const parRang = (a, z) => {
+    const ra = a.b?.rang ?? Infinity, rz = z.b?.rang ?? Infinity;
+    if (ra !== rz) return ra - rz;
+    return (z.b?.pct || 0) - (a.b?.pct || 0) || a.eq.name.localeCompare(z.eq.name);
+  };
+  const resultat = {};
+  for (const [lg, divs] of Object.entries(ligues)) {
+    resultat[lg] = [...divs.values()]
+      .sort((a, z) => ORDRE_DIVISION(a.nom) - ORDRE_DIVISION(z.nom) || a.nom.localeCompare(z.nom));
+    for (const d of resultat[lg]) d.equipes.sort(parRang);
+  }
+  return resultat;
 }
 
 /* La ligne des series : trois places au-dessus, rien en dessous. La Glose
@@ -6231,18 +6267,134 @@ function BlocLigue({ nom, meneurs, chasse, suivies }) {
   );
 }
 
-function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies = [] }) {
+/* Le retard sur la tete de division, ecrit comme sur les tableaux : « — »
+   pour le meneur, « 1.5 » derriere. Le meneur, lui, porte son enjeu — le
+   nombre magique, ou « qualifiée » — qui dit ce qui reste a faire. */
+const ecartDivision = (b) => {
+  if (!b) return "";
+  if (b.meneur) {
+    return b.clinche ? "qualifiée" : b.magique != null ? `magique ${b.magique}` : "—";
+  }
+  return b.retard != null ? b.retard.toFixed(1) : "";
+};
+
+/* Une equipe hors course de division reste vivante par le wild card ; elle
+   ne se grise que quand les deux portes sont fermees. */
+const horsCourse = (b) => !!b && b.elimination === 0 && b.elimWc === 0;
+
+/* Le rang dans la division, et « wc » quand l'equipe tient, en plus, une
+   place de wild card : c'est la seule chose que le tableau par division ne
+   dit pas de lui-meme, et c'est celle qu'on veut savoir. Sans rang de
+   l'API, la position dans le bloc — deja trie — en tient lieu. */
+const etiquetteDivision = (b, position = 0) => {
+  const rang = RANG_FR(b?.rang ?? position + 1);
+  return b && !b.meneur && b.wc != null && b.wc <= 0 ? `${rang} wc` : rang;
+};
+
+function BlocDivisions({ nom, divisions, suivies }) {
+  return (
+    <section style={{ marginBottom: 34 }}>
+      <h2
+        style={{
+          fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 27, lineHeight: 1,
+          textTransform: "uppercase", margin: "0 0 12px", letterSpacing: ".02em",
+        }}
+      >
+        {nom}
+      </h2>
+      {divisions.map((d) => (
+        <div key={d.id} style={{ marginBottom: 16 }}>
+          <div style={ETIQUETTE_BLOC}>{divisionCourte(d.nom).toUpperCase()}</div>
+          <div style={{ display: "grid", gap: 6 }}>
+            {d.equipes.map(({ eq, b }, i) => (
+              <LigneClassement
+                key={eq.id}
+                eq={eq}
+                b={b}
+                etiquette={etiquetteDivision(b, i)}
+                ecart={ecartDivision(b)}
+                fort={!!b && b.meneur && (b.clinche || b.magique != null)}
+                terne={horsCourse(b)}
+                suivie={suivies.includes(eq.id)}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/* Deux lectures du meme classement. Le fragment (#classement/divisions)
+   porte le choix pour qu'un lien le partage ; le reglage le retient d'une
+   visite a l'autre. Le fragment, quand il y en a un, a le dernier mot. */
+const LECTURES = [["course", "La course"], ["divisions", "Par division"]];
+const lectureDepuisCible = (cible) => (cible === "divisions" ? "divisions" : "course");
+/* Affecter location.hash cree une entree d'historique : « precedent »
+   revient a l'autre lecture. Hors du composant, comme `notifier`. */
+function allerLecture(id) {
+  try {
+    if (typeof window !== "undefined") {
+      window.location.hash = id === "divisions" ? "classement/divisions" : "classement";
+    }
+  } catch {
+    /* contexte restreint : la lecture change quand meme */
+  }
+}
+
+function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies = [], cible = null }) {
+  const [lecture, setLecture] = useState(() =>
+    cible ? lectureDepuisCible(cible) : lireReglage("lectureClassement", "course")
+  );
+  /* Boutons precedent/suivant : le fragment change, la lecture suit. */
+  const [cibleVue, setCibleVue] = useState(cible);
+  if (cible !== cibleVue) {
+    setCibleVue(cible);
+    setLecture(lectureDepuisCible(cible));
+  }
+  const choisirLecture = (id) => {
+    setLecture(id);
+    saveState({ lectureClassement: id });
+    allerLecture(id);
+  };
+
   const ligues = useMemo(() => classementLigues(teams, bilans), [teams, bilans]);
+  const divisions = useMemo(() => classementDivisions(teams, bilans), [teams, bilans]);
   const pret = teams.length > 0 && Object.keys(bilans).length > 0;
+  const parDivision = lecture === "divisions";
 
   return (
     <div className="alm-rise">
-      <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 8px" }}>
-        Qui serait en séries si la saison s'arrêtait cette nuit. Chaque ligue qualifie six
-        équipes : les trois championnes de division, têtes de série dans l'ordre de leur bilan,
-        puis trois wild cards — les trois meilleures du reste, toutes divisions confondues.
-        Gagner sa division reste le vrai lot : les wild cards commencent octobre en déplacement.
-      </p>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {LECTURES.map(([id, lib]) => (
+          <button
+            key={id}
+            className="alm-btn"
+            onClick={() => choisirLecture(id)}
+            aria-pressed={lecture === id}
+            style={btnStyle(lecture === id)}
+          >
+            {lib}
+          </button>
+        ))}
+      </div>
+
+      {parDivision ? (
+        <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 8px" }}>
+          Le tableau tel qu'on l'imprime : six divisions de cinq équipes, chacune classée par
+          bilan. Le dernier nombre est le retard sur la tête de division, en matchs — un
+          match d'écart se comble par une victoire de l'une combinée à une défaite de l'autre.
+          Seule la première de chaque division est sûre d'octobre ; « wc » marque celles qui,
+          derrière, tiennent aujourd'hui une place de wild card.
+        </p>
+      ) : (
+        <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 8px" }}>
+          Qui serait en séries si la saison s'arrêtait cette nuit. Chaque ligue qualifie six
+          équipes : les trois championnes de division, têtes de série dans l'ordre de leur bilan,
+          puis trois wild cards — les trois meilleures du reste, toutes divisions confondues.
+          Gagner sa division reste le vrai lot : les wild cards commencent octobre en déplacement.
+        </p>
+      )}
       <p
         style={{
           fontFamily: FF_MONO, fontSize: 10, color: T.dim,
@@ -6272,6 +6424,15 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, suivies =
         <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>
           Le classement n'est pas encore arrivé.
         </p>
+      ) : parDivision ? (
+        [103, 104].map((lg) => (
+          <BlocDivisions
+            key={lg}
+            nom={LIGUE_FR[lg]}
+            divisions={divisions[lg]}
+            suivies={suivies}
+          />
+        ))
       ) : (
         [103, 104].map((lg) => (
           <BlocLigue
@@ -7035,6 +7196,7 @@ ${POLICES}
             bilans={bilans}
             saisonBilans={saisonBilans}
             suivies={suivies}
+            cible={cible}
           />
         ) : onglet === "terrains" ? (
           <VueTerrains
@@ -7147,8 +7309,9 @@ export {
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
   // vue « le classement »
-  VueClassement, classementLigues, lireEcart, lireCompte, ecartWc, pctCourt, divisionCourte,
-  LigneClassement, LaLigne, BlocLigue, LIGUE_FR,
+  VueClassement, classementLigues, classementDivisions, lireEcart, lireCompte, ecartWc, pctCourt, divisionCourte,
+  ecartDivision, etiquetteDivision, horsCourse, ORDRE_DIVISION,
+  LigneClassement, LaLigne, BlocLigue, BlocDivisions, LIGUE_FR,
   // vue « le carnet »
   VueAlmanach, fabriquerQuestion, melanger, detectSightings, indexerClips, classifyFieldOut, CONCEPTS, BY_ID,
   texteAvecKInverse, ordinal, dateFR,

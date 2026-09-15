@@ -840,4 +840,30 @@ describe("rendu de la vue Classement", () => {
   test("tolère des props absentes", () => {
     assert.doesNotThrow(() => rendre(React.createElement(VueClassement, {})));
   });
+
+  test("propose les deux lectures, la course d'abord", () => {
+    const html = rendre(React.createElement(VueClassement, { teams: equipes, bilans }));
+    assert.match(html, /La course/);
+    assert.match(html, /Par division/);
+    assert.match(html, /LA LIGNE/, "sans fragment, c'est la course qui s'affiche");
+  });
+
+  test("#classement/divisions ouvre le tableau par division", () => {
+    const html = rendre(React.createElement(VueClassement, {
+      teams: equipes, bilans, cible: "divisions", suivies: [119],
+    }));
+    assert.doesNotMatch(html, /LA LIGNE/, "la ligne des séries n'a pas sa place ici");
+    assert.doesNotMatch(html, /WILD CARD/);
+    // Les trois divisions de la ligue americaine, dans l'ordre officiel.
+    const est = html.indexOf(">EST<"), centre = html.indexOf(">CENTRE<"), ouest = html.indexOf(">OUEST<");
+    assert.ok(est > -1 && centre > est && ouest > centre, "Est, Centre, Ouest — dans cet ordre");
+    // Dans l'Est : au rang de division, le retard sur la tete en dernier.
+    const rays = html.indexOf("Tampa Bay Rays"), yankees = html.indexOf("New York Yankees");
+    const redsox = html.indexOf("Boston Red Sox"), orioles = html.indexOf("Baltimore Orioles");
+    assert.ok(rays < yankees && yankees < redsox && redsox < orioles, "l'Est est classé par rang");
+    assert.match(html, /magique 32/, "le meneur porte son nombre magique");
+    assert.match(html, /7\.0/, "le retard des Red Sox s'affiche en matchs");
+    assert.match(html, /2e wc/i, "une wild card se signale derrière son rang");
+    assert.match(html, /qualifiée/, "les Dodgers, qualifiés, le restent");
+  });
 });
