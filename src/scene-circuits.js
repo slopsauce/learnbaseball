@@ -1,8 +1,9 @@
 /* ------------------------------------------------------------------ *
  *  LA SCENE DES CIRCUITS
  *  Le seul endroit du projet qui depende de three.js, et le seul qui
- *  soit charge a la demande : `import()` depuis la vue, donc Vite en
- *  fait un morceau separe. Qui ne va jamais dans cet onglet ne
+ *  soit charge a la demande : `import()` depuis les vues qui le montrent
+ *  — les circuits, et la fiche d'un parc dans les terrains — donc Vite
+ *  en fait un morceau separe. Qui n'ouvre ni l'un ni l'autre ne
  *  telecharge pas 143 Ko de moteur 3D pour lire le carnet.
  *
  *  Ce module ne connait rien a React : on lui donne un conteneur et des
@@ -428,15 +429,20 @@ function rubanSol(interieur, exterieur, h, couleur) {
 
 /* ------------------------------------------------------------------ *
  *  MONTAGE
- *  `circuits` : [{ points: [[x,y,z] en pieds], couleur }]
+ *  `circuits` : [{ points: [[x,y,z] en pieds], couleur }] — peut etre
+ *               vide : la scene montre alors le parc seul, ce que fait la
+ *               fiche d'un stade dans « les terrains ».
  *  `mur`      : polyligne du parc, en pieds, ou null
+ *  `cadrage`  : « circuits » (defaut) cadre la gerbe des trajectoires ;
+ *               « parc » recule et monte pour que tout le bol tienne dans
+ *               l'image quand c'est le stade qu'on est venu voir.
  *  `surChoix` : appele avec l'indice de la trajectoire cliquee dans la
  *               scene. La scene ne garde pas ce choix : c'est la vue qui
  *               decide, et qui rappelle `choisir` — le meme chemin que la
  *               liste sous la scene, pour qu'il n'y en ait qu'un.
  *  Rend une poignee : { choisir, redimensionner, detruire }.
  * ------------------------------------------------------------------ */
-export function monterScene(conteneur, { circuits, idStade, stade, animer = true, surChoix }) {
+export function monterScene(conteneur, { circuits = [], idStade, stade, animer = true, surChoix, cadrage = "circuits" }) {
   const parc = construireMur(idStade, stade);
   const mur = parc.mur;
   const gradins = parc.contour ? tribunes(parc.contour, stade || {}) : null;
@@ -471,6 +477,14 @@ export function monterScene(conteneur, { circuits, idStade, stade, animer = true
   let theta = 0, phi = 1.24;
   const etroit = conteneur.clientWidth < 520;
   let rayon = gradins ? (etroit ? 600 : 540) : (etroit ? 560 : 430);
+  /* Le parc seul se regarde de plus haut et de plus loin : sans trajectoire
+     a suivre, rien n'oblige a rester au ras du marbre, et c'est le BOL — sa
+     forme au sol, ses deux etages — qu'on veut lire d'un coup. Un ecran
+     etroit recule encore, sinon les tribunes du champ sortent du cadre. */
+  if (cadrage === "parc") {
+    phi = 1.02;
+    rayon = gradins ? (etroit ? 900 : 760) : (etroit ? 700 : 560);
+  }
   const placerCamera = () => {
     phi = Math.max(0.18, Math.min(1.45, phi));
     rayon = Math.max(140, Math.min(2000, rayon));

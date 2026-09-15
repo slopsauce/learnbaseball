@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, LienAgenda, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, NoteParc, ParcEnRelief, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, LienAgenda, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -114,6 +114,23 @@ describe("rendu de la vue Terrains", () => {
       stadeHabituel: { 119: 22 }, suivies: [119],
     }));
     assert.match(html, /Dodger Stadium|LAD/, "le parc doit apparaître dans le rendu");
+  });
+  test("un parc choisi ouvre sa vue en trois dimensions", () => {
+    /* Le fragment #terrains/22 ouvre la fiche : elle doit porter la boite de
+       la scene — au rendu serveur, sans effet, son texte d'attente — ET le
+       plan a plat, qui tient sans WebGL et porte les distances en metres. */
+    const html = rendre(React.createElement(VueTerrains, {
+      teams: [equipe], stades, stadeHabituel: { 119: 22 }, suivies: [119], cible: "22",
+    }));
+    assert.match(html, /Chargement de la vue en trois dimensions/);
+    assert.match(html, /tourner autour du parc/);
+    assert.match(html, /120 m/, "le plan à plat doit rester dans la fiche");
+  });
+  test("sans parc choisi, la scène n'est pas montée", () => {
+    const html = rendre(React.createElement(VueTerrains, {
+      teams: [equipe], stades, stadeHabituel: { 119: 22 }, suivies: [119],
+    }));
+    assert.doesNotMatch(html, /Chargement de la vue/);
   });
   test("tolère un stade sans coordonnées", () => {
     assert.doesNotThrow(() =>
@@ -647,6 +664,29 @@ describe("bandeaux d'avertissement", () => {
     }));
     assert.doesNotMatch(html, /disabled/, "le bandeau dans la page reste un canal valable");
     assert.match(html, /bandeau dans la page/);
+  });
+});
+
+describe("le parc en relief", () => {
+  test("la scène se rend sans trajectoire", () => {
+    const html = rendre(React.createElement(SceneCircuits, { idStade: 22, stade: stades[22], cadrage: "parc" }));
+    assert.match(html, /Chargement de la vue en trois dimensions/);
+  });
+  test("la note dit d'où sortent le mur et le bol", () => {
+    const trace = rendre(React.createElement(NoteParc, {
+      parc: { qualite: "trace", gradins: { places: 56000, toit: "Open" } },
+    }));
+    assert.match(trace, /tracé réel/);
+    assert.match(trace, /56\u202f000|56 000/, "la capacité qui a servi au bol doit être dite");
+    const interpole = rendre(React.createElement(NoteParc, { parc: { qualite: "interpole", gradins: null } }));
+    assert.match(interpole, /interpolé/);
+    assert.doesNotMatch(interpole, /tribunes/);
+    assert.equal(rendre(React.createElement(NoteParc, { parc: null })), "");
+  });
+  test("la fiche n'affiche la note qu'une fois la scène montée", () => {
+    const html = rendre(React.createElement(ParcEnRelief, { id: 22, s: stades[22] }));
+    assert.match(html, /trois dimensions/);
+    assert.doesNotMatch(html, /tracé réel|interpolé/);
   });
 });
 
