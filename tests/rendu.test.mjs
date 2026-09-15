@@ -830,11 +830,18 @@ describe("rendu de la vue Classement", () => {
     assert.match(html, /éliminée/);
   });
 
-  test("hors saison, la note d'avertissement s'affiche", () => {
+  test("saison finie, la note d'avertissement s'affiche", () => {
+    const html = rendre(React.createElement(VueClassement, {
+      teams: equipes, bilans, saisonBilans: 2025, bilansClos: true,
+    }));
+    assert.match(html, /La saison régulière 2025 est finie : ce classement est son tableau final/);
+  });
+
+  test("la vue ne tranche pas elle-même sur l'année : sans `bilansClos`, pas de note", () => {
     const html = rendre(React.createElement(VueClassement, {
       teams: equipes, bilans, saisonBilans: 2025,
     }));
-    assert.match(html, /Hors saison : ce classement est celui de 2025/);
+    assert.doesNotMatch(html, /tableau final/);
   });
 
   test("tolère des props absentes", () => {
