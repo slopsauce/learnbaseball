@@ -2920,8 +2920,12 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
   const soiree = [...parNuit.values()].flat().filter((m) => m.h < 24).length;
   const miens = toutes ? 0 : aSuivre.length;
 
-  // La nuit « en cours » : avant 7h du matin, on est encore dans celle d'hier.
-  const ceteNuit = useMemo(() => nuitCourante(), []);
+  /* La nuit « en cours » : avant 7h du matin, on est encore dans celle d'hier.
+     C'etait un `useMemo(..., [])`, donc lu UNE FOIS au montage : l'onglet
+     restant ouvert des jours, le repere « CE SOIR » designait toujours la
+     nuit du jour ou l'on avait ouvert la page — l'ancre, elle, avancait.
+     On reprend la nuit du crochet, qui, elle, suit le calendrier. */
+  const ceteNuit = nuitAuj;
 
   /* Une fois les pastilles a leur vraie taille, quatorze nuits font sept
      metres de page sur un telephone — on cherchait ce soir, on defile cinq
