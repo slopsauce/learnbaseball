@@ -3793,7 +3793,8 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
     <div className="alm-rise">
       <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 16px" }}>
         Les trente parcs de la ligue. Ceux qui reçoivent cette nuit sont allumés, et un trait relie
-        chaque équipe visiteuse à sa destination. Touche un point pour le détail du terrain.
+        chaque équipe visiteuse à sa destination. Touche un point pour voir le parc en trois
+        dimensions et le détail du terrain.
       </p>
 
       {/* `role="img"` fermait la carte : il annonce un dessin unique, et tout
@@ -3878,6 +3879,7 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
             gap: 18, flexWrap: "wrap", alignItems: "flex-start",
           }}
         >
+          <ParcEnRelief key={ouvert.id} id={ouvert.id} s={ouvert.s} />
           <PlanTerrain s={ouvert.s} />
           <div style={{ flex: "1 1 240px", minWidth: 0, fontFamily: FF_MONO, fontSize: 11.5 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -3953,6 +3955,34 @@ function VueTerrains({ teams, stades, stadeHabituel = {}, suivies = [], cible = 
         équivalente d'Albers. Les distances des clôtures sont celles annoncées par la ligue.
       </p>
     </div>
+  );
+}
+
+/* Le parc en trois dimensions dans sa fiche : la meme scene que « les
+   circuits », sans trajectoire, cadree sur le bol. Le plan a plat reste a
+   cote — il tient sans WebGL, et c'est lui qui porte les distances en metres.
+
+   Un composant a part, et non deux etats de plus dans la vue, pour que la
+   `key` posee par la fiche remette TOUT a zero d'un parc a l'autre : la scene,
+   mais aussi la note qu'elle rapporte. Sans cela, la fiche de Fenway disait un
+   instant le bol de Wrigley, le temps que le nouveau se construise.
+
+   La scene ouvre la fiche, la note la ferme — `order` l'envoie apres le plan
+   et les mesures, qui sont rendus entre les deux par le parent. */
+function ParcEnRelief({ id, s }) {
+  const [parc, setParc] = useState(null);
+  return (
+    <>
+      <div style={{ flex: "1 1 100%", minWidth: 0 }}>
+        <SceneCircuits idStade={id} stade={s} cadrage="parc" onParc={setParc} />
+      </div>
+      {parc && (
+        <p style={{ flex: "1 1 100%", order: 1, fontFamily: FF_MONO, fontSize: 10, color: T.dim, margin: 0, lineHeight: 1.7 }}>
+          Ce que montre la vue en trois dimensions.
+          <NoteParc parc={parc} />
+        </p>
+      )}
+    </>
   );
 }
 
@@ -5781,44 +5811,58 @@ function VueCircuits({ teams, suivies = [], stades = {} }) {
                 ajoute la courbure typique de l'angle de spray — en le disant.
               </>
             )}
-            {parc?.qualite === "trace" ? (
-              <>
-                <br />
-                Le contour du parc est le <strong>tracé réel</strong>, relevé sur les plans de
-                Baseball Savant (jeu de données GeomMLBStadiums, de Ben Dilday, sous licence MIT) :
-                les creux des allées et les coins près des poteaux sont ceux du stade. Son échelle
-                est calée sur les trois distances peintes sur les clôtures, marquées ci-dessus.
-              </>
-            ) : parc?.qualite === "interpole" ? (
-              <>
-                <br />
-                Ce parc n'est pas couvert par le relevé : le mur est <strong>interpolé</strong> à
-                partir des trois distances publiées. Il est juste là où elles sont marquées, deviné
-                ailleurs.
-              </>
-            ) : null}
-            {parc?.gradins && (
-              <>
-                <br />
-                Les tribunes, elles, ne sont <strong>relevées nulle part</strong> — aucune source
-                publique ne donne le bâti des trente parcs. Elles sont <strong>déduites</strong> :
-                l'empreinte est celle du relevé, la profondeur des gradins vient de la capacité
-                annoncée
-                {parc.gradins.places ? ` (${parc.gradins.places.toLocaleString("fr-FR")} places)` : ""} à
-                six pieds carrés par siège, et la pente est celle d'usage. Le bol a donc la bonne
-                taille et la bonne forme au sol, pas l'architecture du stade. Il s'ouvre du côté
-                où l'on se place, comme une maquette qu'on aurait coupée pour voir dedans.
-                {parc.gradins.toit === "Dome"
-                  ? " Le toit fixe est figuré par une couronne au-dessus des gradins."
-                  : parc.gradins.toit === "Retractable"
-                    ? " Ce parc a un toit rétractable : la couronne en figure la structure, ouverte."
-                    : ""}
-              </>
-            )}
+            <NoteParc parc={parc} />
           </p>
         </>
       )}
     </div>
+  );
+}
+
+/* Ce que la scene doit dire d'elle-meme, parc par parc : d'ou sort le mur,
+   d'ou sort le bol. Sous les circuits comme dans la fiche d'un terrain — le
+   meme dessin appelle la meme note, ecrite une seule fois. Chaque bout
+   commence par un saut de ligne : la note se glisse a la suite d'un
+   paragraphe deja commence. */
+function NoteParc({ parc }) {
+  if (!parc) return null;
+  return (
+    <>
+      {parc.qualite === "trace" ? (
+        <>
+          <br />
+          Le contour du parc est le <strong>tracé réel</strong>, relevé sur les plans de
+          Baseball Savant (jeu de données GeomMLBStadiums, de Ben Dilday, sous licence MIT) :
+          les creux des allées et les coins près des poteaux sont ceux du stade. Son échelle
+          est calée sur les trois distances peintes sur les clôtures, marquées sur le mur.
+        </>
+      ) : parc.qualite === "interpole" ? (
+        <>
+          <br />
+          Ce parc n'est pas couvert par le relevé : le mur est <strong>interpolé</strong> à
+          partir des trois distances publiées. Il est juste là où elles sont marquées, deviné
+          ailleurs.
+        </>
+      ) : null}
+      {parc.gradins && (
+        <>
+          <br />
+          Les tribunes, elles, ne sont <strong>relevées nulle part</strong> — aucune source
+          publique ne donne le bâti des trente parcs. Elles sont <strong>déduites</strong> :
+          l'empreinte est celle du relevé, la profondeur des gradins vient de la capacité
+          annoncée
+          {parc.gradins.places ? ` (${parc.gradins.places.toLocaleString("fr-FR")} places)` : ""} à
+          six pieds carrés par siège, et la pente est celle d'usage. Le bol a donc la bonne
+          taille et la bonne forme au sol, pas l'architecture du stade. Il s'ouvre du côté
+          où l'on se place, comme une maquette qu'on aurait coupée pour voir dedans.
+          {parc.gradins.toit === "Dome"
+            ? " Le toit fixe est figuré par une couronne au-dessus des gradins."
+            : parc.gradins.toit === "Retractable"
+              ? " Ce parc a un toit rétractable : la couronne en figure la structure, ouverte."
+              : ""}
+        </>
+      )}
+    </>
   );
 }
 
@@ -5933,7 +5977,12 @@ function ClipCircuit({ circuit }) {
    c'est le seul endroit de l'application qui le mentionne. Le rendu serveur
    n'execute pas les effets, donc rien de tout cela ne part en cascade dans
    les tests ou dans une prerendue. */
-function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) {
+/* Une liste vide, figee : la fiche d'un terrain monte la scene SANS
+   trajectoire. Un `[]` ecrit dans le rendu serait neuf a chaque passage, et
+   l'effet ci-dessous demonterait et remonterait le parc a chaque rendu. */
+const AUCUN_CIRCUIT = [];
+
+function SceneCircuits({ circuits = AUCUN_CIRCUIT, idStade, stade, ouvert, onParc, onChoisir, cadrage = "circuits" }) {
   const boite = useRef(null);
   const poignee = useRef(null);
   const [etat, setEtat] = useState("attente"); // attente | prete | refus
@@ -5942,7 +5991,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
   useEffect(() => {
     let vivant = true;
     const el = boite.current;
-    if (!el || !circuits.length) return undefined;
+    if (!el) return undefined;
     doux.current = !window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
     import("./scene-circuits.js")
       .then(({ monterScene }) => {
@@ -5953,6 +6002,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
           stade,
           animer: doux.current,
           surChoix: onChoisir,
+          cadrage,
         });
         setEtat("prete");
         onParc?.(poignee.current.parc);
@@ -5963,7 +6013,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
       poignee.current?.detruire();
       poignee.current = null;
     };
-  }, [circuits, idStade, stade, onParc, onChoisir]);
+  }, [circuits, idStade, stade, onParc, onChoisir, cadrage]);
 
   useEffect(() => {
     const i = circuits.findIndex((c) => c.cle === ouvert);
@@ -6001,7 +6051,7 @@ function SceneCircuits({ circuits, idStade, stade, ouvert, onParc, onChoisir }) 
         )}
       </div>
       <p style={{ fontFamily: FF_MONO, fontSize: 9.5, color: T.dim, margin: "6px 0 0" }}>
-        Glisser pour tourner autour du terrain · molette ou pincement pour approcher
+        Glisser pour tourner autour du {cadrage === "parc" ? "parc" : "terrain"} · molette ou pincement pour approcher
       </p>
     </div>
   );
@@ -7332,7 +7382,7 @@ export {
   VueEquipes, FicheJoueur, ChoixEquipe, statutEffectif, statsSaison, grouperEffectif,
   GROUPES_POSTE, POSTE_FR, CHAMPS_EFFECTIF, HYDRATE_EFFECTIF, GLOSSAIRE_FICHE,
   // vue « les circuits »
-  VueCircuits, SceneCircuits, ClipCircuit, BilanEnergie, circuitsDuMatch, CHAMPS_CIRCUITS,
+  VueCircuits, SceneCircuits, NoteParc, ParcEnRelief, ClipCircuit, BilanEnergie, circuitsDuMatch, CHAMPS_CIRCUITS,
   simuler, ajusterRotation, reconstruire, lateraleTypique, sprayDepuisCoords, murDuParc, energie,
   ROTATION_MAX, SPRAY_SANS_LATERALE,
   CHAMPS_HISTOIRE, CADENCE_HISTOIRE, grouperParManche, codeAction, CATEGORIE, TON_ACTION, limiterActions, ACTIONS_VISIBLES,
