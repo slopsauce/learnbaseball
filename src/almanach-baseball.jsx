@@ -2597,14 +2597,24 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
     [ancre]
   );
 
+  /* La fenetre dont l'horaire est a l'ecran, null tant qu'aucun n'y est.
+     Un reveil relance la requete sur la MEME fenetre : repasser alors en
+     « chargement » demontait toute la frise — et avec elle la fiche ouverte
+     et la video en cours de lecture, coupee net au simple retour sur
+     l'onglet. On rafraichit donc en silence : l'ancien horaire reste affiche
+     jusqu'a l'arrivee du nouveau, et un echec le laisse en place. */
+  const ancreAffichee = useRef(null);
+
   useEffect(() => {
     let annule = false;
-    // Passage en etat « chargement » avant la requete : meme motif que dans
-    // le carnet, la regle ne distingue pas un aller-retour reseau d'une
-    // synchronisation entre deux etats React.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setPhase("load");
-    setErreur("");
+    const silencieux = ancreAffichee.current === ancre;
+    if (!silencieux) {
+      ancreAffichee.current = null;
+      // Passage en etat « chargement » avant la requete, seulement quand la
+      // fenetre change.
+      setPhase("load");
+      setErreur("");
+    }
     // On tire une journee MLB de plus : une nuit parisienne deborde sur le
     // lendemain americain. On volontairement PAS `broadcasts` (x3 le poids
     // pour des diffuseurs americains inutiles depuis la France).
@@ -2672,9 +2682,10 @@ function VueNuits({ teams, suivies, setSuivies, stadeHabituel = {}, bilans = {},
         }
         setMatchs(purgerReports(out));
         setPhase("ok");
+        ancreAffichee.current = ancre;
       })
       .catch((e) => {
-        if (annule) return;
+        if (annule || silencieux) return;
         setErreur(String(e?.message || e));
         setPhase("erreur");
       });
