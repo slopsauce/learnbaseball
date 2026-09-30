@@ -6411,14 +6411,15 @@ function BlocDivisions({ nom, divisions, suivies }) {
 /* Deux lectures du meme classement. Le fragment (#classement/divisions)
    porte le choix pour qu'un lien le partage ; le reglage le retient d'une
    visite a l'autre. Le fragment, quand il y en a un, a le dernier mot. */
-const LECTURES = [["course", "La course"], ["divisions", "Par division"]];
-const lectureDepuisCible = (cible) => (cible === "divisions" ? "divisions" : "course");
+const LECTURES = [["course", "La course"], ["divisions", "Par division"], ["series", "Les séries"]];
+const lectureDepuisCible = (cible) =>
+  cible === "divisions" ? "divisions" : cible === "series" || cible === "playoffs" ? "series" : "course";
 /* Affecter location.hash cree une entree d'historique : « precedent »
    revient a l'autre lecture. Hors du composant, comme `notifier`. */
 function allerLecture(id) {
   try {
     if (typeof window !== "undefined") {
-      window.location.hash = id === "divisions" ? "classement/divisions" : "classement";
+      window.location.hash = id === "course" ? "classement" : `classement/${id}`;
     }
   } catch {
     /* contexte restreint : la lecture change quand meme */
@@ -6445,6 +6446,8 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, bilansClo
   const divisions = useMemo(() => classementDivisions(teams, bilans), [teams, bilans]);
   const pret = teams.length > 0 && Object.keys(bilans).length > 0;
   const parDivision = lecture === "divisions";
+  const parSeries = lecture === "series";
+  const series = useSeries(parSeries, saisonBilans);
 
   return (
     <div className="alm-rise">
@@ -6462,7 +6465,13 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, bilansClo
         ))}
       </div>
 
-      {parDivision ? (
+      {parSeries ? (
+        <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 8px" }}>
+          Le tableau d'octobre : wild card, division, championnat de ligue, puis la World Series.
+          La tête de série est listée en premier ; une case en italique attend l'issue du tour
+          précédent.
+        </p>
+      ) : parDivision ? (
         <p style={{ fontSize: 15, lineHeight: 1.55, margin: "0 0 8px" }}>
           Le tableau tel qu'on l'imprime : six divisions de cinq équipes, chacune classée par
           bilan. Le dernier nombre est le retard sur la tête de division, en matchs — un
@@ -6504,7 +6513,15 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, bilansClo
         </p>
       )}
 
-      {!pret ? (
+      {parSeries ? (
+        <TableauSeries
+          teams={teams}
+          suivies={suivies}
+          saison={series.saison ?? saisonBilans}
+          donnees={series.donnees}
+          erreur={series.erreur}
+        />
+      ) : !pret ? (
         <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>
           Le classement n'est pas encore arrivé.
         </p>
@@ -6532,6 +6549,230 @@ function VueClassement({ teams = [], bilans = {}, saisonBilans = null, bilansClo
   );
 }
 
+/* ------------------------------------------------------------------ *
+ *  LES SERIES : le tableau d'octobre, tour par tour
+ *  /schedule/postseason/series rend, serie par serie, la liste des matchs
+ *  — y compris ceux qui ne sont pas encore joues, avec des equipes
+ *  fictives (« HOU/CWS », « AL Higher Seed ») tant que le tour precedent
+ *  n'est pas tranche. On ne recalcule rien : l'etat d'une serie se lit sur
+ *  les bilans de serie que l'API porte deja dans `leagueRecord`.
+ * ------------------------------------------------------------------ */
+const TOURS_SERIES = [
+  ["F", "Wild Card", "Au meilleur des trois, chez la mieux classée."],
+  ["D", "Division", "Au meilleur des cinq."],
+  ["L", "Championnat de ligue", "Au meilleur des sept."],
+  ["W", "World Series", "Au meilleur des sept : le titre."],
+];
+
+/* Transforme la reponse de l'API en tours, et dans chaque tour en series
+   {id, ligue, equipes:[{id,nom,v,vraie}], gagnant, etat, matchsPour}.
+   Une equipe est « vraie » si l'id figure dans la liste des trente
+   franchises ; les autres sont des cases a pourvoir. Une serie est
+   terminee quand une equipe a atteint la majorite des matchs. */
+function seriesSeries(donnees, teams = []) {
+  const connues = new Set(teams.map((t) => t.id));
+  const tours = { F: [], D: [], L: [], W: [] };
+  for (const s of donnees?.series || []) {
+    const jeux = s.games || [];
+    const type = s.series?.gameType;
+    if (!tours[type] || !jeux.length) continue;
+    const dernier = jeux[jeux.length - 1];
+    const gamesInSeries = dernier.gamesInSeries || jeux[0].gamesInSeries || 0;
+    const pour = Math.floor(gamesInSeries / 2) + 1;
+    const desc = jeux[0].seriesDescription || "";
+    const ligue = desc.startsWith("AL") ? 103 : desc.startsWith("NL") ? 104 : null;
+    // Les bilans de serie sont portes par chaque match : on lit le plus
+    // avance, pas le dernier de la liste (un match « si necessaire » peut
+    // etre a venir et a 0-0).
+    const joues = jeux.filter((g) => g.status?.abstractGameState !== "Preview");
+    const ref = joues.length ? joues[joues.length - 1] : jeux[0];
+    const cote = (c) => {
+      const t = ref.teams?.[c];
+      const id = t?.team?.id;
+      return {
+        id,
+        nom: t?.team?.name || "À déterminer",
+        v: t?.leagueRecord?.wins || 0,
+        vraie: connues.has(id),
+        haut: c === "home",
+      };
+    };
+    // Convention MLB : la mieux classee recoit a domicile — « home » est
+    // donc la tete de serie, listee en premier.
+    const equipes = [cote("home"), cote("away")];
+    const gagnant = equipes.find((e) => e.v >= pour && e.vraie) || null;
+    const enCours = jeux.some((g) => g.status?.abstractGameState === "Live");
+    const etat = gagnant ? "finie" : joues.length || enCours ? "encours" : "avenir";
+    tours[type].push({
+      id: s.series.id, ligue, equipes, gagnant, etat, pour, gamesInSeries,
+      joues: joues.length,
+    });
+  }
+  for (const t of Object.values(tours)) {
+    t.sort((a, z) => String(a.id).localeCompare(String(z.id)));
+  }
+  return tours;
+}
+
+function LigneSerie({ e, gagne, perdu, suivie }) {
+  return (
+    <div
+      style={{
+        display: "flex", alignItems: "center", gap: 9,
+        opacity: perdu ? 0.5 : 1, fontFamily: FF_MONO, fontSize: 11,
+      }}
+    >
+      {e.vraie ? <Img src={CAP(e.id)} alt="" size={22} /> : <span style={{ width: 22 }} />}
+      <span
+        style={{
+          flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          color: suivie ? T.sodium : e.vraie ? T.chalk : T.dim,
+          fontWeight: gagne || suivie ? 700 : 400,
+          fontStyle: e.vraie ? "normal" : "italic",
+        }}
+      >
+        {e.nom}
+      </span>
+      <span style={{ color: gagne ? T.sodium : T.chalk, fontWeight: 700, width: 14, textAlign: "right" }}>
+        {e.vraie || e.v ? e.v : ""}
+      </span>
+    </div>
+  );
+}
+
+/* Hors du composant, comme allerLecture : ecrire le fragment est un effet. */
+function ouvrirFiche(id) {
+  try {
+    if (typeof window !== "undefined") window.location.hash = `equipes/${id}`;
+  } catch {
+    /* contexte restreint */
+  }
+}
+
+function CarteSerie({ serie, suivies }) {
+  const { equipes, gagnant, etat, pour } = serie;
+  const [a, b] = equipes;
+  let statut;
+  if (gagnant) statut = `${gagnant.nom} l'emporte ${Math.max(a.v, b.v)}-${Math.min(a.v, b.v)}`;
+  else if (etat === "encours") {
+    statut = a.v === b.v ? `Égalité ${a.v}-${b.v}` : `${a.v > b.v ? a.nom : b.nom} mène ${Math.max(a.v, b.v)}-${Math.min(a.v, b.v)}`;
+  } else statut = "Pas encore commencée";
+  const go = (e) => { if (e.vraie) ouvrirFiche(e.id); };
+  return (
+    <div
+      style={{
+        background: "rgba(11,36,26,.5)", borderRadius: 3, padding: "9px 11px",
+        display: "grid", gap: 6,
+        border: etat === "encours" ? "1px solid rgba(242,206,107,.45)" : "1px solid transparent",
+      }}
+    >
+      {equipes.map((e) => (
+        <div
+          key={`${e.id}-${e.haut}`}
+          role={e.vraie ? "button" : undefined}
+          tabIndex={e.vraie ? 0 : undefined}
+          onClick={() => go(e)}
+          onKeyDown={(ev) => { if (ev.key === "Enter") go(e); }}
+          title={e.vraie ? `Ouvrir la fiche : ${e.nom}` : undefined}
+          style={{ cursor: e.vraie ? "pointer" : "default" }}
+        >
+          <LigneSerie
+            e={e}
+            gagne={!!gagnant && gagnant.id === e.id}
+            perdu={!!gagnant && gagnant.id !== e.id}
+            suivie={e.vraie && suivies.includes(e.id)}
+          />
+        </div>
+      ))}
+      <div style={{ fontFamily: FF_MONO, fontSize: 9.5, color: etat === "encours" ? T.sodium : T.dim, letterSpacing: ".04em" }}>
+        {statut} · premier à {pour}
+      </div>
+    </div>
+  );
+}
+
+function TableauSeries({ teams = [], suivies = [], saison = null, donnees = null, erreur = false }) {
+  const tours = useMemo(() => seriesSeries(donnees, teams), [donnees, teams]);
+  const total = Object.values(tours).reduce((n, t) => n + t.length, 0);
+  if (erreur) {
+    return (
+      <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.clay }}>
+        Le tableau des séries n'a pas pu être chargé.
+      </p>
+    );
+  }
+  if (!donnees) {
+    return <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>Le tableau des séries n'est pas encore arrivé.</p>;
+  }
+  if (!total) {
+    return (
+      <p style={{ fontFamily: FF_MONO, fontSize: 11, color: T.dim }}>
+        Les séries {saison ?? ""} ne sont pas encore programmées : le tableau apparaît quand la saison
+        régulière se termine.
+      </p>
+    );
+  }
+  return (
+    <div>
+      {TOURS_SERIES.map(([type, titre, regle]) => {
+        const liste = tours[type];
+        if (!liste.length) return null;
+        // Les series de ligue se rangent par ligue ; la finale est seule.
+        const groupes = type === "W"
+          ? [[null, liste]]
+          : [103, 104].map((lg) => [lg, liste.filter((s) => s.ligue === lg)]).filter(([, l]) => l.length);
+        return (
+          <section key={type} style={{ marginBottom: 30 }}>
+            <h2
+              style={{
+                fontFamily: FF_DISPLAY, fontWeight: 700, fontSize: 27, lineHeight: 1,
+                textTransform: "uppercase", margin: "0 0 4px", letterSpacing: ".02em",
+              }}
+            >
+              {titre}
+            </h2>
+            <p style={{ fontFamily: FF_MONO, fontSize: 10, color: T.dim, margin: "0 0 12px" }}>{regle}</p>
+            {groupes.map(([lg, l]) => (
+              <div key={lg ?? "w"} style={{ marginBottom: 12 }}>
+                {lg && <div style={ETIQUETTE_BLOC}>{LIGUE_FR[lg].toUpperCase()}</div>}
+                <div style={{ display: "grid", gap: 8, gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))" }}>
+                  {l.map((s) => <CarteSerie key={s.id} serie={s} suivies={suivies} />)}
+                </div>
+              </div>
+            ))}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Charge le tableau des series de la saison. Hors saison (fin octobre a
+   mars), la saison en cours est vide : on tombe sur la precedente, comme
+   pour les bilans. Les series se rejouent chaque nuit : relecture toutes
+   les deux minutes tant que l'onglet est ouvert sur cette lecture. */
+function useSeries(actif, saison) {
+  const [etat, setEtat] = useState({ donnees: null, erreur: false, saison: null });
+  useEffect(() => {
+    if (!actif) return undefined;
+    let annule = false;
+    const url = (s) => `${API}/schedule/postseason/series?season=${s}&sportId=1`;
+    const tirer = () => {
+      const an = saison ?? new Date().getFullYear();
+      jsonMlb(url(an))
+        .then((d) => (d.series?.length || an !== new Date().getFullYear()
+          ? { d, an }
+          : jsonMlb(url(an - 1)).then((d2) => ({ d: d2, an: an - 1 }))))
+        .then(({ d, an: a }) => { if (!annule) setEtat({ donnees: d, erreur: false, saison: a }); })
+        .catch(() => { if (!annule) setEtat((e) => ({ ...e, erreur: !e.donnees })); });
+    };
+    tirer();
+    const t = setInterval(tirer, 120000);
+    return () => { annule = true; clearInterval(t); };
+  }, [actif, saison]);
+  return etat;
+}
+
 /* ================================================================== *
  *  COQUILLE : etat partage, onglets, chrome commun
  * ================================================================== */
@@ -6551,6 +6792,7 @@ const ALIAS = {
   direct: "direct", live: "direct", "en-cours": "direct",
   classement: "classement", standings: "classement", rangs: "classement",
   "wild-card": "classement", wildcard: "classement",
+  playoffs: "classement", series: "classement", séries: "classement",
 };
 const FRAGMENT = {
   nuits: "programme", carnet: "carnet", terrains: "terrains",
@@ -6582,6 +6824,8 @@ function ongletDepuisFragment(brut) {
    « precedent » du navigateur fonctionne sans effort. */
 function cibleDepuisFragment(brut) {
   const bouts = String(brut || "").replace(/^#\/?/, "").trim().split("/");
+  /* #playoffs seul ouvre la lecture « séries » du classement. */
+  if (!bouts[1] && ["playoffs", "series", "séries"].includes(bouts[0].toLowerCase())) return "series";
   return bouts.length > 1 && bouts[1] ? bouts[1] : null;
 }
 
@@ -7408,7 +7652,7 @@ export {
   libelleSerie, enjeuEquipe, blagueDeNoms, distanceKm, couleurEra,
   DIVISION_FR, RANG_FR, LIMITE_TENABLE, DEBUT, FIN, AUBE, PASTILLE_PX, VOIE_PX,
   // vue « le classement »
-  VueClassement, classementLigues, classementDivisions, lireEcart, lireCompte, ecartWc, pctCourt, divisionCourte,
+  VueClassement, seriesSeries, TableauSeries, classementLigues, classementDivisions, lireEcart, lireCompte, ecartWc, pctCourt, divisionCourte,
   ecartDivision, etiquetteDivision, horsCourse, ORDRE_DIVISION,
   LigneClassement, LaLigne, BlocLigue, BlocDivisions, LIGUE_FR, saisonClose,
   // vue « le carnet »

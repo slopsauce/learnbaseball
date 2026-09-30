@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToString } from "react-dom/server";
 import { TITRE_ONGLET as A_TITRES } from "../.test-bundle.mjs";
-import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, NoteParc, ParcEnRelief, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, LienAgenda, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement } from "../.test-bundle.mjs";
+import App, { VueNuits, VueAlmanach, VueTerrains, VueEquipes, VueCircuits, SceneCircuits, NoteParc, ParcEnRelief, ClipCircuit, FicheJoueur, ChoixEquipe, Action, AffichesDuSoir, LienStade, DetailMatch, tactileApple, livrerIcs, LienAgenda, BandeauSituation, VueDirect, BasesOccupees, Compteurs, TableauManches, PileBandeaux, ReglageAvertissements, VueClassement, TableauSeries, seriesSeries } from "../.test-bundle.mjs";
 
 /* `vite build` empaquette sans executer : il laisse passer les zones mortes
    temporelles, les hooks mal ordonnes et les variables indefinies. Symptome
@@ -912,5 +912,56 @@ describe("rendu de la vue Classement", () => {
     assert.match(html, /7\.0/, "le retard des Red Sox s'affiche en matchs");
     assert.match(html, /2e wc/i, "une wild card se signale derrière son rang");
     assert.match(html, /qualifiée/, "les Dodgers, qualifiés, le restent");
+  });
+});
+
+describe("Les séries — tableau d'octobre", () => {
+  const jeu = (pk, desc, gis, away, home, etat = "Final") => ({
+    gamePk: pk, seriesDescription: desc, gamesInSeries: gis,
+    status: { abstractGameState: etat },
+    teams: {
+      away: { team: { id: away[0], name: away[1] }, leagueRecord: { wins: away[2] } },
+      home: { team: { id: home[0], name: home[1] }, leagueRecord: { wins: home[2] } },
+    },
+  });
+  const donnees = { series: [
+    { series: { id: "F_1", gameType: "F" }, games: [
+      jeu(1, "AL Wild Card Series", 3, [117, "Houston Astros", 2], [145, "Chicago White Sox", 0]),
+    ] },
+    { series: { id: "D_1", gameType: "D" }, games: [
+      jeu(2, "AL Division Series", 5, [5528, "HOU/CWS", 0], [114, "Cleveland Guardians", 0], "Preview"),
+    ] },
+    { series: { id: "W_1", gameType: "W" }, games: [
+      jeu(3, "World Series", 7, [2711, "Lower Seed League Champion", 0], [2710, "Higher Seed League Champion", 0], "Preview"),
+    ] },
+  ] };
+  const teams = [{ id: 117, name: "Houston Astros" }, { id: 145, name: "Chicago White Sox" }, { id: 114, name: "Cleveland Guardians" }];
+
+  test("une série terminée désigne son vainqueur, une à venir reste à venir", () => {
+    const t = seriesSeries(donnees, teams);
+    assert.equal(t.F[0].gagnant?.id, 117);
+    assert.equal(t.F[0].etat, "finie");
+    assert.equal(t.D[0].etat, "avenir");
+    assert.equal(t.D[0].equipes[1].vraie, false, "HOU/CWS est une case à pourvoir");
+    assert.equal(t.W[0].ligue, null);
+  });
+
+  test("rend les tours dans l'ordre, avec un vainqueur et des cases à pourvoir", () => {
+    const html = rendre(React.createElement(TableauSeries, { teams, donnees }));
+    assert.ok(html.indexOf("Wild Card") < html.indexOf("Division"));
+    assert.ok(html.indexOf("Division") < html.indexOf("World Series"));
+    assert.match(html, /Houston Astros l&#x27;emporte 2-0/);
+    assert.match(html, /HOU\/CWS/);
+  });
+
+  test("dit l'attente, l'absence de séries et l'erreur sans planter", () => {
+    assert.match(rendre(React.createElement(TableauSeries, {})), /pas encore arrivé/);
+    assert.match(rendre(React.createElement(TableauSeries, { donnees: { series: [] }, saison: 2026 })), /pas encore programmées/);
+    assert.match(rendre(React.createElement(TableauSeries, { erreur: true })), /pas pu être chargé/);
+  });
+
+  test("#classement/series ouvre la lecture séries", () => {
+    const html = rendre(React.createElement(VueClassement, { teams, bilans: {}, cible: "series" }));
+    assert.match(html, /Le tableau d&#x27;octobre/);
   });
 });
